@@ -1,4 +1,5 @@
 import os
+import shutil
 from dataclasses import dataclass
 
 """
@@ -41,31 +42,32 @@ observable.save('observable.h5')
 import numpy as np
 
 
-def _h5py_recursively_save_dict(h5file, path, dic, with_attrs=True):
+def _h5py_recursively_write_dict(h5file, path, dic, with_attrs=True):
     """
     Save a nested dictionary of arrays to an HDF5 file using h5py.
     """
-    attrs = dic.get('attrs', {})
+    import h5py
     for key, item in dic.items():
         if with_attrs and key == 'attrs':
-            continue  # handle attrs below
+            h5file[path].attrs.update(item)
+            continue
         path_key = f'{path}/{key}'.rstrip('/')
 
         if isinstance(item, dict):
             # If dict has 'attrs' and other keys, it's a group with metadata
-            grp = h5file.require_group(path_key, track_order=True)
-            _h5py_recursively_save_dict(h5file, path_key, item, with_attrs=with_attrs)
+            grp = h5file.create_group(path_key, track_order=True)
+            _h5py_recursively_write_dict(h5file, path_key, item, with_attrs=with_attrs)
         else:
             # Assume it's an array-like and write as dataset
-            dset = h5file.create_dataset(path_key, data=np.asarray(item))
+            item = np.asarray(item)
+            if isinstance(item.flat[0].item(), str):
+                dset = h5file.create_dataset(path_key, shape=item.shape, dtype=h5py.string_dtype())
+                dset[...] = item
+            else:
+                dset = h5file.create_dataset(path_key, data=item)
 
-    if with_attrs:
-        # Set attributes for the current group
-        if isinstance(attrs, dict):
-            h5file[path].attrs.update(attrs)
 
-
-def _h5py_recursively_load_dict(h5file, path='/'):
+def _h5py_recursively_read_dict(h5file, path='/'):
     """
     Load a nested dictionary of arrays from an HDF5 file.
     Attributes are stored in a special 'attrs' key.
@@ -75,9 +77,13 @@ def _h5py_recursively_load_dict(h5file, path='/'):
     for key, item in h5file[path].items():
         path_key = f'{path}/{key}'.rstrip('/')
         if isinstance(item, h5py.Group):
-            dic[key] = _h5py_recursively_load_dict(h5file, path_key)
+            dic[key] = _h5py_recursively_read_dict(h5file, path_key)
         elif isinstance(item, h5py.Dataset):
-            dic[key] = item[()]
+            dic[key] = item[...]
+            if h5py.check_string_dtype(item.dtype):
+                dic[key] = dic[key].astype('U')
+            if not dic[key].shape:
+                dic[key] = dic[key].item()
     # Load group-level attributes, if any
     if h5file[path].attrs:
         dic['attrs'] = {k: v for k, v in h5file[path].attrs.items()}
@@ -94,35 +100,48 @@ def mkdir(dirname):
         return
 
 
-def _txt_recursively_save_dict(path, dic, with_attrs=True):
+
+def _npy_auto_format_specifier(array):
+    if np.issubdtype(array.dtype, np.bool_):
+        return '%d'
+    elif np.issubdtype(array.dtype, np.integer):
+        return '%d'
+    elif np.issubdtype(array.dtype, np.floating):
+        return '%.18e'
+    elif np.issubdtype(array.dtype, np.str_):
+        maxlen = array.dtype.itemsize // 4  # 4 bytes per unicode char
+        return f'%{maxlen}s'
+    elif np.issubdtype(array.dtype, np.bytes_):
+        maxlen = array.dtype.itemsize
+        return f'%{maxlen}s'
+    else:
+        raise TypeError(f"Unsupported dtype: {array.dtype}")
+
+
+def _txt_recursively_write_dict(path, dic, with_attrs=True):
     """
     Save a nested dictionary of arrays to an HDF5 file using h5py.
     """
-    attrs = dic.get('attrs', {})
     for key, item in dic.items():
-        if with_attrs and key == 'attrs':
-            continue  # handle attrs below
         path_key = os.path.join(path, key)
+        if with_attrs and key == 'attrs':
+            import json
+            with open(path_key + '.json', 'w') as file:
+                json.dump(item, file)
+            continue  # handle attrs below
 
         if isinstance(item, dict):
             # If dict has 'attrs' and other keys, it's a group with metadata
             mkdir(path_key)
-            _txt_recursively_save_dict(path_key, item, with_attrs=with_attrs)
+            _txt_recursively_write_dict(path_key, item, with_attrs=with_attrs)
         else:
             # Assume it's an array-like and write as dataset
             item = np.asarray(item)
-            dtype = item.dtype
-            np.savetxt(path_key + '.txt', item, header=f'dtype = {str(dtype)}')
-
-    if with_attrs:
-        # Set attributes for the current group
-        if isinstance(attrs, dict):
-            path_key = os.path.join(path, 'attrs.txt')
-            import json
-            json.dump(attrs, path_key)
+            np.savetxt(path_key + '.txt', np.ravel(item), fmt=_npy_auto_format_specifier(item),
+                       header=f'dtype = {str(item.dtype)}\nshape = {str(item.shape)}')
 
 
-def _txt_recursively_load_dict(path='/'):
+def _txt_recursively_read_dict(path='/'):
     """
     Load a nested dictionary of arrays from an HDF5 file.
     Attributes are stored in a special 'attrs' key.
@@ -131,40 +150,48 @@ def _txt_recursively_load_dict(path='/'):
     for key in os.listdir(path):
         path_key = os.path.join(path, key)
         if os.path.isdir(path_key):
-            dic[key] = _txt_recursively_load_dict(path_key)
+            dic[key] = _txt_recursively_read_dict(path_key)
         elif os.path.isfile(path_key):
+            if path_key.endswith('.json'):
+                import json
+                with open(path_key, 'r') as file:
+                    dic['attrs'] = json.load(file)
+                continue
             with open(path_key, 'r') as file:
-                dtype = file.readline().replace(' ', '').replace('dtype=', '')
+                dtype = file.readline().rstrip('\r\n').replace(' ', '').replace('#dtype=', '')
                 dtype = np.dtype(dtype)
+                shape = file.readline().rstrip('\r\n').replace(' ', '').replace('#shape=', '')[1:-1].split(',')
+                shape = tuple(int(s) for s in shape if s)
+            key = key[:-4] if key.endswith('.txt') else key
             dic[key] = np.loadtxt(path_key, dtype=dtype)
-    # Load group-level attributes, if any
-    path_key = os.path.join(path, 'attrs.txt')
-    if os.path.exists(path_key):
-        import json
-        dic['attrs'] = json.load(path_key)
+            if not shape: dic[key] = dic[key].item()
+            else: dic[key] = dic[key].reshape(shape)
     return dic
 
 
-def _save(filename, state):
+def _write(filename, state, overwrite=True):
     filename = str(filename)
+    mkdir(os.path.dirname(filename))
     if any(filename.endswith(ext) for ext in ['.h5', '.hdf5']):
         import h5py
-        with h5py.File(filename, 'w') as f:
-            _h5py_recursively_save_dict(f, '/', state)
+        with h5py.File(filename, 'w' if overwrite else 'a') as f:
+            _h5py_recursively_write_dict(f, '/', state)
     elif any(filename.endswith(ext) for ext in ['txt']):
-         _txt_recursively_save_dict(filename[:-4], state)
+         if overwrite:
+            shutil.rmtree(filename[:-4], ignore_errors=True)
+         _txt_recursively_write_dict(filename[:-4], state)
     else:
         raise ValueError(f'unknown file format: {filename}')
 
 
-def _load(filename):
+def _read(filename):
     filename = str(filename)
     if any(filename.endswith(ext) for ext in ['.h5', '.hdf5']):
         import h5py
-        with h5py.File(filename, 'w') as f:
-            dic = _h5py_recursively_load_dict(f, '/')
+        with h5py.File(filename, 'r') as f:
+            dic = _h5py_recursively_read_dict(f, '/')
     elif any(filename.endswith(ext) for ext in ['.txt']):
-        dic = _txt_recursively_load_dict(filename[:-4])
+        dic = _txt_recursively_read_dict(filename[:-4])
     else:
         raise ValueError(f'Unknown file format: {filename}')
     return dic
@@ -190,10 +217,41 @@ class RegisteredObservable(type):
         return cls
 
 
+
+
+def deep_eq(obj1, obj2, equal_nan=True, raise_error=False, label=None):
+    """(Recursively) test equality between ``obj1`` and ``obj2``."""
+    if raise_error:
+        label_str = f' for object {label}' if label is not None else ''
+    if type(obj2) is type(obj1):
+        if isinstance(obj1, dict):
+            if obj2.keys() == obj1.keys():
+                return all(deep_eq(obj1[name], obj2[name], raise_error=raise_error, label=name) for name in obj1)
+            elif raise_error:
+                raise ValueError(f'Different keys: {obj2.keys()} vs {obj1.keys()}{label_str}')
+        elif isinstance(obj1, (tuple, list)):
+            if len(obj2) == len(obj1):
+                return all(deep_eq(o1, o2, raise_error=raise_error, label=label) for o1, o2 in zip(obj1, obj2))
+            elif raise_error:
+                raise ValueError(f'Different lengths: {len(obj2)} vs {len(obj1)}{label_str}')
+        else:
+            try:
+                toret = np.array_equal(obj1, obj2, equal_nan=equal_nan)
+            except TypeError:  # nan not supported
+                toret = np.array_equal(obj1, obj2)
+            if not toret and raise_error:
+                raise ValueError(f'Not equal: {obj2} vs {obj1}{label_str}')
+            return toret
+    if raise_error:
+        raise ValueError(f'Not same type: {type(obj2)} vs {type(obj1)}{label_str}')
+    return False
+
+
+
 class ObservableLeaf(metaclass=RegisteredObservable):
     """A compressed observable with named values and coordinates, supporting slicing, selection, and plotting."""
 
-    _name = 'base'
+    _name = 'leaf_base'
     _forbidden_names = ('name',)
 
     def __init__(self, values, coords=None, attrs=None):
@@ -329,25 +387,25 @@ class ObservableLeaf(metaclass=RegisteredObservable):
 
     def __getstate__(self, as_dict=False):
         state = {}
-        for name in ['values', 'coords', 'attrs']:
-            state[name] = dict(getattr(self, '_' + name))
+        for sec in ['values', 'coords', 'attrs']:
+            state[sec] = dict(getattr(self, '_' + sec))
             if as_dict:
-                state[name]['name'] = list(state[name].keys())
+                state[sec]['name'] = list(state[sec].keys())
         state['name'] = self._name
         return state
 
     def __setstate__(self, state):
-        for name in ['values', 'coords', 'attrs']:
-            dic = dict(state[name])
-            if 'name' in state[name]:
-                names = state[name]['name']
+        for sec in ['values', 'coords', 'attrs']:
+            dic = dict(state[sec])
+            if 'name' in state[sec]:
+                names = state[sec]['name']
                 dic = {}
-                for name in names: dic[name] = state[name]
-            setattr(self, '_' + name, dic)
+                for name in names: dic[name] = state[sec][name]
+            setattr(self, '_' + sec, dic)
 
     @classmethod
     def from_state(cls, state):
-        _name = state.pop('name')
+        _name = str(state.pop('name'))
         try:
             cls = cls._registry[_name]
         except KeyError:
@@ -356,7 +414,7 @@ class ObservableLeaf(metaclass=RegisteredObservable):
         new.__setstate__(state)
         return new
 
-    def save(self, filename):
+    def write(self, filename, overwrite=True):
         """
         Save observable to an HDF5 file.
 
@@ -365,10 +423,10 @@ class ObservableLeaf(metaclass=RegisteredObservable):
         filename : str
             Output file name.
         """
-        _save(filename, self.__getstate__(as_dict=True))
+        _write(filename, self.__getstate__(as_dict=True), overwrite=overwrite)
 
     @classmethod
-    def load(cls, filename):
+    def read(cls, filename):
         """
         Load observable from an HDF5 file.
 
@@ -381,12 +439,15 @@ class ObservableLeaf(metaclass=RegisteredObservable):
         -------
         ObservableLeaf
         """
-        return cls.from_state(_load(filename))
+        return cls.from_state(_read(filename))
+
+    def __eq__(self, other):
+        return deep_eq(self.__getstate__(), other.__getstate__())
 
 
 def find_single_true_slab_bounds(mask):
     start, stop = 0, 0
-    if str(mask.dtype) != 'bool':
+    if np.issubdtype(mask.dtype, np.integer):
         start, stop = mask[0], mask[-1] + 1
         if not np.all(np.diff(mask) == 1):
             raise ValueError('Discontinuous indexing')
@@ -480,7 +541,7 @@ class ObservableTree(metaclass=RegisteredObservable):
     """
     A collection of Observable objects, supporting selection, slicing, and labeling.
     """
-    _name = 'base_tree'
+    _name = 'tree_base'
     _forbidden_label_values = ('name', 'attrs', 'labels')
     _sep_strlabels = '-'
 
@@ -610,7 +671,7 @@ class ObservableTree(metaclass=RegisteredObservable):
         for index in indices:
             toret.append(_get_leaf(self, index))
         if len(toret) == 1:
-            return toret
+            return toret[0]
         return toret
 
     def sizes(self, level=None):
@@ -693,7 +754,7 @@ class ObservableTree(metaclass=RegisteredObservable):
         else:
             state['labels'] = {'names': self._sep_strlabels.join(list(self._labels.keys())),
                                'values': []}
-            for ileaf, leaf in self._leaves:
+            for ileaf, leaf in enumerate(self._leaves):
                 label = self._sep_strlabels.join([self._strlabels[k][ileaf] for k in self._labels])
                 state['labels']['values'].append(label)
                 state[label] = leaf.__getstate__(as_dict=as_dict)
@@ -701,8 +762,8 @@ class ObservableTree(metaclass=RegisteredObservable):
         return state
 
     def __setstate__(self, state):
-        leaves = state['leaves']
-        if isinstance(leaves, list):
+        if 'leaves' in state:
+            leaves = state['leaves']
             self._leaves = [ObservableTree.from_state(leaf) for leaf in leaves]
             self._labels = state['labels']
             self._strlabels = state['strlabels']
@@ -717,7 +778,7 @@ class ObservableTree(metaclass=RegisteredObservable):
             self._leaves = []
             for ileaf in range(nleaves):
                 label = state['labels']['values'][ileaf]
-                self._leaves.append(state[label])
+                self._leaves.append(ObservableTree.from_state(state[label]))
 
     @classmethod
     def from_state(cls, state):
@@ -730,7 +791,7 @@ class ObservableTree(metaclass=RegisteredObservable):
         new.__setstate__(state)
         return new
 
-    def save(self, filename):
+    def write(self, filename):
         """
         Save observable to an HDF5 file.
 
@@ -739,10 +800,10 @@ class ObservableTree(metaclass=RegisteredObservable):
         filename : str
             Output file name.
         """
-        _save(filename, self.__getstate__(as_dict=True))
+        _write(filename, self.__getstate__(as_dict=True))
 
     @classmethod
-    def load(cls, filename):
+    def read(cls, filename):
         """
         Load observable from an HDF5 file.
 
@@ -755,54 +816,63 @@ class ObservableTree(metaclass=RegisteredObservable):
         -------
         ObservableLeaf
         """
-        return cls.from_state(_load(filename))
+        return cls.from_state(_read(filename))
+
+    def __eq__(self, other):
+        return deep_eq(self.__getstate__(), other.__getstate__())
 
 
 
-@dataclass
 class _ObservableTreeUpdateHelper(object):
 
-    observable: ObservableTree
+    _tree: ObservableTree
+
+    def __init__(self, tree):
+        self._tree = tree
 
     def __call__(self, **labels):
-        indices = self.observable.get(**labels)
+        indices = self._tree._index_labels(**labels)
         if len(indices) == 1:
-            return _ObservableTreeUpdateSingleRef(self.observable, indices[0])
-        return _ObservableTreeUpdateRef(self.observable, indices)
+            return _ObservableTreeUpdateSingleRef(self._tree, indices[0])
+        return _ObservableTreeUpdateRef(self._tree, indices)
 
 
-def _replace_observable(observable, index, sub):
-    current_observable = observable
+def _replace_in_tree(tree, index, sub):
+    current_tree = tree
     for idx in index[:-1]:
-        current_observable = observable._leaves[idx]
-    current_observable._leaves[index[-1]] = sub
+        current_tree = tree._leaves[idx]
+    current_tree._leaves[index[-1]] = sub
 
 
-@dataclass
+
 class _ObservableTreeUpdateSingleRef(object):
 
-    _observable: ObservableTree
+    _tree: ObservableTree
     _index: tuple
 
+    def __init__(self, tree, index):
+        self._tree = tree
+        self._index = index
+
     def __getitem__(self, masks):
-        sub = _get_leaf(self._observable, self._index).__getitem__(masks)
-        new = self._observable.copy()
-        _replace_observable(new, self._index, sub)
+        sub = _get_leaf(self._tree, self._index).__getitem__(masks)
+        new = self._tree.copy()
+        _replace_in_tree(new, self._index, sub)
         return new
 
     def select(self, **ranges):
-        sub = _get_leaf(self._observable, self._index).select(**ranges)
-        new = self._observable.copy()
-        _replace_observable(new, self._index, sub)
+        sub = _get_leaf(self._tree, self._index).select(**ranges)
+        new = self._tree.copy()
+        _replace_in_tree(new, self._index, sub)
         return new
 
     @property
     def at(self):
-        at = self._get_leaf(self._observable, self._index).at
+        at = self._get_leaf(self._tree, self._index).at
 
         def _replace(sub):
-            new = self._observable.copy()
-            _replace_observable(new, self._index, sub)
+            new = self._tree.copy()
+            _replace_in_tree(new, self._index, sub)
 
         at._hook = _replace
         return at
@@ -811,19 +881,19 @@ class _ObservableTreeUpdateSingleRef(object):
 @dataclass
 class _ObservableTreeUpdateRef(object):
 
-    _observable: ObservableTree
+    _tree: ObservableTree
     _indices: list
 
     def get(self, **labels):
-        new = self._observable.copy()
+        new = self._tree.copy()
         for index in self._indices:
-            sub = _get_leaf(self._observable, index).get(**labels)
-            _replace_observable(new, index, sub)
+            sub = _get_leaf(self._tree, index).get(**labels)
+            _replace_in_tree(new, index, sub)
         return new
 
     def select(self, **ranges):
-        new = self._observable.copy()
+        new = self._tree.copy()
         for index in self._indices:
-            sub = _get_leaf(self._observable, index).select(**ranges)
-            _replace_observable(new, index, sub)
+            sub = _get_leaf(self._tree, index).select(**ranges)
+            _replace_in_tree(new, index, sub)
         return new
