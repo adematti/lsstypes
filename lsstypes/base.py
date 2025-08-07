@@ -2,42 +2,7 @@ import os
 import shutil
 from dataclasses import dataclass
 
-"""
-observable = Observable(value={"spectrum": ..., "nmodes": ...}, coords={"k": ..., "mu": ...}, attrs={})
-mask = observable.coords("k") < 0.2
-observable[mask, 0]
-observable = observable.select(k=(0.0, 0.2), mu=(-0.8, 0.8))
-observable = observable.select(mu=slice(0, None, 3))
-observable.plot()
-
-observable = ObservableTree([observable, observable], ell=[0, 2])
-observable.labels()  # [{'ell': 0}, {'ell': 2}]
-observable.ell  # [0, 2]
-observable = observable.at(ell=0).select(k=(0.0, 0.2), mu=(-0.8, 0.8))
-observable = observable.select(ell=2)
-observable.at(ell=0)
-observable['2']
-observable.coords("k", concatenate=False)
-observable.coords(0, concatenate=True)
-observable.values()
-observable.values("spectrum", concatenate=True)
-observable.plot()
-
-observable = ObservableTree([observable, observable], observable=['correlation', 'spectrum'])
-observable.labels()  # [{'observable': 'correlation', 'ell': 0}, {'observable': 'correlation', 'ell': 2}, {'observable': 'spectrum', 'ell': 0}, {'observable': 'spectrum', 'ell': 2}]
-# or ['correlation/0', ...]
-# or ['correlation', 'spectrum']
-observable.observable  # ['correlation', 'spectrum']
-observable = observable.select(observable='correlation', ell=0) | observable.select(observable='correlation', ell=2)
-observable['correlation/2', 'spectrum/0']
-observable.at(observable='correlation', ell=2).select(k=(0.0, 0.2), mu=(-0.8, 0.8))
-mask = observable.coords("k") < 0.2
-observable.at(observable='correlation', ell=2)[mask, :]
-observable.plot()
-
-observable.save('observable.h5')
-"""
-
+from .utils import mkdir
 
 import numpy as np
 
@@ -91,16 +56,6 @@ def _h5py_recursively_read_dict(h5file, path='/'):
     return dic
 
 
-
-def mkdir(dirname):
-    """Try to create ``dirname`` and catch :class:`OSError`."""
-    try:
-        os.makedirs(dirname)  # MPI...
-    except OSError:
-        return
-
-
-
 def _npy_auto_format_specifier(array):
     if np.issubdtype(array.dtype, np.bool_):
         return '%d'
@@ -122,6 +77,7 @@ def _txt_recursively_write_dict(path, dic, with_attrs=True):
     """
     Save a nested dictionary of arrays to an HDF5 file using h5py.
     """
+    mkdir(path)
     for key, item in dic.items():
         path_key = os.path.join(path, key)
         if with_attrs and key == 'attrs':
@@ -177,9 +133,9 @@ def _write(filename, state, overwrite=True):
         with h5py.File(filename, 'w' if overwrite else 'a') as f:
             _h5py_recursively_write_dict(f, '/', state)
     elif any(filename.endswith(ext) for ext in ['txt']):
-         if overwrite:
+        if overwrite:
             shutil.rmtree(filename[:-4], ignore_errors=True)
-         _txt_recursively_write_dict(filename[:-4], state)
+        _txt_recursively_write_dict(filename[:-4], state)
     else:
         raise ValueError(f'unknown file format: {filename}')
 
@@ -217,9 +173,7 @@ class RegisteredObservable(type):
         return cls
 
 
-
-
-def deep_eq(obj1, obj2, equal_nan=True, raise_error=False, label=None):
+def deep_eq(obj1, obj2, equal_nan=True, raise_error=True, label=None):
     """(Recursively) test equality between ``obj1`` and ``obj2``."""
     if raise_error:
         label_str = f' for object {label}' if label is not None else ''
@@ -252,25 +206,34 @@ class ObservableLeaf(metaclass=RegisteredObservable):
     """A compressed observable with named values and coordinates, supporting slicing, selection, and plotting."""
 
     _name = 'leaf_base'
-    _forbidden_names = ('name',)
+    _forbidden_names = ('name', 'attrs', 'values_names', 'coords_names')
+    _default_coords = tuple()
+    _is_leaf = True
 
-    def __init__(self, values, coords=None, attrs=None):
+    def __init__(self, coords=None, attrs=None, **data):
         """
         Parameters
         ----------
-        value : dict
-            Dictionary of named arrays (e.g. {"spectrum": ..., "nmodes": ...}).
-        coords : dict
-            Dictionary of named coordinate arrays (e.g. {"k": ..., "mu": ...}).
+        **data : dict
+            Dictionary of named arrays (e.g. {"spectrum": ..., "nmodes": ..., "k": ..., "mu": ...}).
+        coords : list
+            List of coordinates (e.g. ["k", "mu"]).
+            Should match arrays provided in ``data``.
         attrs : dict, optional
             Additional attributes.
         """
-        self._values = dict(values)
-        if coords is None: coords = {}
-        self._coords = dict(coords)
-        for name in ['values', 'coords']:
-            assert not any(k in self._forbidden_names for k in getattr(self, '_' + name)), f'Cannot use {self._forbidden_names} as name for arrays'
+        self._data = dict(data)
+        self._coords = list(coords or self._default_coords)
+        assert not any(k in self._forbidden_names for k in self._data), f'Cannot use {self._forbidden_names} as name for arrays'
+        self._values = [name for name in data if name not in self._coords]
+        assert len(self._values), 'Provide at least one value array'
         self._attrs = dict(attrs) if attrs is not None else {}
+
+    def __getattr__(self, name):
+        """Access values and coords by name."""
+        if name in self._coords + self._values:
+            return self._data[name]
+        raise AttributeError(name)
 
     def coords(self, name=None):
         """
@@ -287,14 +250,14 @@ class ObservableLeaf(metaclass=RegisteredObservable):
         -------
         coords : array or dict
         """
-        coords = self._coords
+        coords = self._data
         if isinstance(name, str):
             coords = coords[name]
-        elif name is not None:
-            coords = coords[list(self._coords.keys())[name]]
+        elif name is not None:  # index
+            coords = coords[self._coords[name]]
         return coords
 
-    def values(self, name=0, **kw):
+    def values(self, name=None):
         """
         Get value array(s).
 
@@ -307,20 +270,23 @@ class ObservableLeaf(metaclass=RegisteredObservable):
         -------
         values : array or dict
         """
-        values = self._values
+        values = self._data
         if isinstance(name, str):
             values = values[name]
-        elif name is not None:
-            values = values[list(self._values.keys())[name]]
+        elif name is not None:  # index
+            values = values[self._values[name]]
         return values
+
+    def value(self):
+        return self._data[self._values[0]]
 
     @property
     def shape(self):
-        return tuple(len(coord) for coord in self._coords.values())
+        return tuple(len(self._data[coord]) for coord in self._coords)
 
     @property
     def size(self):
-        return self.values().size
+        return self._data[self._values[0]].size
 
     @property
     def ndim(self):
@@ -345,21 +311,31 @@ class ObservableLeaf(metaclass=RegisteredObservable):
         """
         masks = _format_masks(self.shape, masks)
         mask = np.ix_(*masks)
-        values = {k: v[mask] for k, v in self._values.items()}
-        coords = {k: v[mask] for mask, (k, v) in zip(masks, self._coords.items())}
         new = self.copy()
-        new._values = values
-        new._coords = coords
+        for name in self._values:
+            new._data[name] = self._data[name][mask]
+        for name, mask in zip(self._coords, masks):
+            new._data[name] = new._data[name][mask]
         return new
 
-    def _index_select(self, inverse=False, **ranges):
-        masks = {name: np.ones(len(self._coords[name]), dtype=bool) for name in self._coords}
+    def _index_select(self, **ranges):
+        inverse = False
+        masks = {name: np.ones(len(self._data[name]), dtype=bool) for name in self._coords}
         for k, v in ranges.items():
             array = self.coords(k)
             mask = (array >= v[0]) & (array <= v[1])
             if inverse: mask = ~mask
             masks[k] &= mask
         return tuple(masks.values())
+
+    def clone(self, **kwargs):
+        """Copy and update data."""
+        new = self.copy()
+        for name, value in kwargs.items():
+            if name not in new._coords + new._values: raise ValueError('{name} not unknown')
+            new._data[name] = value
+        new._data.update(**kwargs)
+        return new
 
     def select(self, **ranges):
         """
@@ -386,22 +362,18 @@ class ObservableLeaf(metaclass=RegisteredObservable):
         return new
 
     def __getstate__(self, as_dict=False):
-        state = {}
-        for sec in ['values', 'coords', 'attrs']:
-            state[sec] = dict(getattr(self, '_' + sec))
-            if as_dict:
-                state[sec]['name'] = list(state[sec].keys())
+        state = dict(self._data)
+        for name in ['values', 'coords']:
+            state[name + '_names'] = list(getattr(self, '_' + name))
+        state['attrs'] = dict(self._attrs)
         state['name'] = self._name
         return state
 
     def __setstate__(self, state):
-        for sec in ['values', 'coords', 'attrs']:
-            dic = dict(state[sec])
-            if 'name' in state[sec]:
-                names = state[sec]['name']
-                dic = {}
-                for name in names: dic[name] = state[sec][name]
-            setattr(self, '_' + sec, dic)
+        for name in ['values', 'coords']:
+            setattr(self, '_' + name, [str(n) for n in state[name + '_names']])
+        self._attrs = state['attrs']
+        self._data = {name: state[name] for name in self._values + self._coords}
 
     @classmethod
     def from_state(cls, state):
@@ -484,7 +456,7 @@ class _ObservableLeafUpdateRef(object):
 
     def select(self, **ranges):
         new = self._observable.copy()
-        for axis, name in enumerate(self._observable.coords()):
+        for axis, name in enumerate(self._observable._coords):
             if name not in ranges: continue
             _ranges = {name: ranges[name]}
 
@@ -507,12 +479,12 @@ class _ObservableLeafUpdateRef(object):
             new_mask = np.ones(len(new_coord), dtype=bool)
             new_mask[new_sizes[0]:sum(new_sizes[:2])] = False
 
-            sub._coords[name] = new_coord
+            sub._data[name] = new_coord
             for vname in sub._values:
-                value = np.zeros(new_shape, dtype=sub._values[vname].dtype)
-                value[create_index_tuple(new_mask)] = new._values[vname][create_index_tuple(self_mask)]
-                value[create_index_tuple(sub_mask)] = sub._values[vname]
-                sub._values[vname] = value
+                value = np.zeros(new_shape, dtype=sub._data[vname].dtype)
+                value[create_index_tuple(new_mask)] = new._data[vname][create_index_tuple(self_mask)]
+                value[create_index_tuple(sub_mask)] = sub._data[vname]
+                sub._data[vname] = value
 
             new = sub
 
@@ -521,17 +493,17 @@ class _ObservableLeafUpdateRef(object):
         return new
 
 
-def _iter_on_tree(f, observable, level=None):
-    if level == 0 or isinstance(observable, ObservableLeaf):
-        return [f(observable)]
+def _iter_on_tree(f, tree, level=None):
+    if level == 0 or tree._is_leaf:
+        return [f(tree)]
     toret = []
-    for observable in observable._leaves:
-        toret += _iter_on_tree(f, observable, level=level - 1 if level is not None else None)
+    for tree in tree._leaves:
+        toret += _iter_on_tree(f, tree, level=level - 1 if level is not None else None)
     return toret
 
 
-def _get_leaf(observable, index):
-    toret = observable._leaves[index[0]]
+def _get_leaf(tree, index):
+    toret = tree._leaves[index[0]]
     if len(index) == 1:
         return toret
     return _get_leaf(toret, index[1:])
@@ -542,10 +514,11 @@ class ObservableTree(metaclass=RegisteredObservable):
     A collection of Observable objects, supporting selection, slicing, and labeling.
     """
     _name = 'tree_base'
-    _forbidden_label_values = ('name', 'attrs', 'labels')
+    _forbidden_label_values = ('name', 'attrs', 'labels_names', 'labels_values')
     _sep_strlabels = '-'
+    _is_leaf = False
 
-    def __init__(self, leaves, **labels):
+    def __init__(self, leaves, attrs=None, **labels):
         """
         Parameters
         ----------
@@ -555,9 +528,10 @@ class ObservableTree(metaclass=RegisteredObservable):
             Label arrays (e.g. ell=[0, 2], observable=['spectrum',...]).
         """
         self._leaves = list(leaves)
+        self._attrs = dict(attrs or {})
         leaves_labels = []
         for leaf in self._leaves:
-            if not isinstance(leaf, ObservableLeaf):
+            if not leaf._is_leaf:
                 leaves_labels += leaf.labels(keys_only=True)
         self._labels, self._strlabels = {}, {}
         nleaves = len(leaves)
@@ -573,7 +547,7 @@ class ObservableTree(metaclass=RegisteredObservable):
                 raise ValueError(f'Cannot use labels with same name at different levels: {k}')
             self._strlabels[k] = list(map(self._label_to_str, self._labels[k]))
             assert not any(v in self._forbidden_label_values for v in self._strlabels[k]), 'Cannot use "labels" as a label value'
-            convert = list(map(self._str_to_label, self._labels[k]))
+            convert = list(map(self._str_to_label, self._strlabels[k]))
             assert convert == self._labels[k], f'Labels must be mappable to str; found label -> str -> label != identity:\n{convert} != {self._labels[k]}'
         uniques = []
         for ileaf in range(nleaves):
@@ -585,7 +559,7 @@ class ObservableTree(metaclass=RegisteredObservable):
     @classmethod
     def _label_to_str(cls, label):
         if isinstance(label, int):
-            return str(int)
+            return str(label)
         if isinstance(label, str):
             for char in ['_', cls._sep_strlabels]:
                 if char in label:
@@ -601,12 +575,16 @@ class ObservableTree(metaclass=RegisteredObservable):
         splits = list(str.split('_'))
         for i, split in enumerate(splits):
             try:
-                splits[i] = split
+                splits[i] = int(split)
             except ValueError:
                 pass
         if squeeze and len(splits) == 1:
             return splits[0]
         return tuple(splits)
+
+    @property
+    def attrs(self):
+        return self._attrs
 
     def labels(self, level=None, keys_only=False, as_str=False):
         """
@@ -620,7 +598,7 @@ class ObservableTree(metaclass=RegisteredObservable):
         if keys_only:
             for ileaf, leaf in enumerate(self._leaves):
                 toret += [label for label in self._labels if label not in toret]
-                if level == 0 or isinstance(leaf, ObservableLeaf):
+                if level == 0 or leaf._is_leaf:
                     pass
                 else:
                     for label in leaf.labels(level=level - 1 if level is not None else None, keys_only=keys_only, as_str=as_str):
@@ -628,7 +606,7 @@ class ObservableTree(metaclass=RegisteredObservable):
         else:
             for ileaf, leaf in enumerate(self._leaves):
                 self_labels = {k: v[ileaf] for k, v in (self._strlabels if as_str else self._labels).items()}
-                if level == 0 or isinstance(leaf, ObservableLeaf):
+                if level == 0 or leaf._is_leaf:
                     toret.append(self_labels)
                 else:
                     for labels in leaf.labels(level=level - 1 if level is not None else None, keys_only=keys_only, as_str=as_str):
@@ -664,8 +642,12 @@ class ObservableTree(metaclass=RegisteredObservable):
             toret = [(index,) for index in self_index]
         return toret
 
-    def get(self, **labels):
+    def get(self, *args, **labels):
         """Return leave(s) corresponding to input labels."""
+        if args:
+            assert not labels, 'Cannot provide both list and dict of labels'
+            assert len(args) == 1 and len(self._labels) == 1, 'Args mode available only for one label entry'
+            labels = {next(iter(self._labels)): args[0]}
         indices = self._index_labels(**labels)
         toret = []
         for index in indices:
@@ -698,7 +680,7 @@ class ObservableTree(metaclass=RegisteredObservable):
         new._leaves = leaves
         return new
 
-    def values(self, concatenate=True):
+    def value(self, concatenate=True):
         """
         Get (flattened) values from all leaves.
 
@@ -711,12 +693,12 @@ class ObservableTree(metaclass=RegisteredObservable):
 
         Returns
         -------
-        values : list or array
+        value : list or array
         """
-        def get_values(leaf):
-            return _iter_on_tree(lambda leaf: leaf.values(0), leaf, level=None)
+        def get_value(leaf):
+            return _iter_on_tree(lambda leaf: leaf.value(), leaf, level=None)
 
-        values = get_values(self)
+        values = get_value(self)
         values = [value.ravel() for value in values]
         if concatenate:
             return np.concatenate(values, axis=0)
@@ -752,32 +734,34 @@ class ObservableTree(metaclass=RegisteredObservable):
             state['labels'] = dict(self._labels)
             state['strlabels'] = dict(self._strlabels)
         else:
-            state['labels'] = {'names': self._sep_strlabels.join(list(self._labels.keys())),
-                               'values': []}
+            state['labels_names'] = self._sep_strlabels.join(list(self._labels.keys()))
+            state['labels_values'] = []
             for ileaf, leaf in enumerate(self._leaves):
                 label = self._sep_strlabels.join([self._strlabels[k][ileaf] for k in self._labels])
-                state['labels']['values'].append(label)
+                state['labels_values'].append(label)
                 state[label] = leaf.__getstate__(as_dict=as_dict)
+        state['attrs'] = dict(self._attrs)
         state['name'] = self._name
         return state
 
     def __setstate__(self, state):
+        self._attrs = state['attrs']
         if 'leaves' in state:
             leaves = state['leaves']
             self._leaves = [ObservableTree.from_state(leaf) for leaf in leaves]
             self._labels = state['labels']
             self._strlabels = state['strlabels']
         else:  # h5py format
-            label_names = np.array(state['labels']['names']).item().split(self._sep_strlabels)
-            label_values = list(map(lambda x: x.split(self._sep_strlabels), np.array(state['labels']['values'])))
+            label_names = np.array(state['labels_names']).item().split(self._sep_strlabels)
+            label_values = list(map(lambda x: x.split(self._sep_strlabels), np.array(state['labels_values'])))
             self._labels, self._strlabels = {}, {}
             for i, name in enumerate(label_names):
                 self._strlabels[name] = [v[i] for v in label_values]
                 self._labels[name] = [self._str_to_label(s, squeeze=True) for s in self._strlabels[name]]
-            nleaves = len(state['labels']['values'])
+            nleaves = len(state['labels_values'])
             self._leaves = []
             for ileaf in range(nleaves):
-                label = state['labels']['values'][ileaf]
+                label = state['labels_values'][ileaf]
                 self._leaves.append(ObservableTree.from_state(state[label]))
 
     @classmethod
