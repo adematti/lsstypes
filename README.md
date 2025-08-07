@@ -10,7 +10,10 @@ Define data types in a tree-like structure, implementing:
 
 Two file formats supported:
 - hdf5 (preferred; requires `h5py`)
-- ascii
+- plain text
+
+
+See notebooks in nb/.
 
 ---
 

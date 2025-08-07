@@ -37,22 +37,22 @@ def test_tree():
     assert leaf3.shape == leaf2.shape
     leaf4 = leaf.at(s=(10., 80.)).select(s=(20., 70.), mu=(-0.8, 1.))
 
-    tree = ObservableTree(leaves, corr=labels)
-    assert tree.labels(keys_only=True) == ['corr']
-    assert tree.labels() == [{'corr': 'DD'}, {'corr': 'DR'}, {'corr': 'RR'}]
+    tree = ObservableTree(leaves, keys=labels)
+    assert tree.labels(keys_only=True) == ['keys']
+    assert tree.labels() == [{'keys': 'DD'}, {'keys': 'DR'}, {'keys': 'RR'}]
     assert len(tree.value()) == tree.size
-    tree2 = tree.at(corr='DD').select(s=(10., 80.))
-    assert tree2.get(corr='DD').shape != tree2.get(corr='DR').shape
+    tree2 = tree.at(keys='DD').select(s=(10., 80.))
+    assert tree2.get(keys='DD').shape != tree2.get(keys='DR').shape
     tree2 = tree.select(s=(10., 80.))
-    assert tree2.get(corr='DD').shape == tree2.get(corr='DR').shape
+    assert tree2.get(keys='DD').shape == tree2.get(keys='DR').shape
 
     k = np.linspace(0., 0.2, 21)
     spectrum = rng.uniform(size=k.size)
     leaf = ObservableLeaf(spectrum=spectrum, k=k, coords=['k'], attrs=dict(los='x'))
     tree2 = ObservableTree([tree, leaf], observable=['correlation', 'spectrum'])
-    assert tree2.labels(keys_only=True) == ['observable', 'corr']
+    assert tree2.labels(keys_only=True) == ['observable', 'keys']
     assert tree2.labels(level=0) == [{'observable': 'correlation'}, {'observable': 'spectrum'}]
-    assert tree2.labels() == [{'observable': 'correlation', 'corr': 'DD'}, {'observable': 'correlation', 'corr': 'DR'}, {'observable': 'correlation', 'corr': 'RR'}, {'observable': 'spectrum'}]
+    assert tree2.labels() == [{'observable': 'correlation', 'keys': 'DD'}, {'observable': 'correlation', 'keys': 'DR'}, {'observable': 'correlation', 'keys': 'RR'}, {'observable': 'spectrum'}]
 
     fn = test_dir / 'tree.h5'
     tree2.write(fn)
@@ -103,5 +103,5 @@ def test_types():
 
 if __name__ == '__main__':
 
-    #test_tree()
+    test_tree()
     test_types()

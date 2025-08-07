@@ -372,7 +372,7 @@ class ObservableLeaf(metaclass=RegisteredObservable):
     def __setstate__(self, state):
         for name in ['values', 'coords']:
             setattr(self, '_' + name, [str(n) for n in state[name + '_names']])
-        self._attrs = state['attrs']
+        self._attrs = state.get('attrs', {})  # because of hdf5 reader
         self._data = {name: state[name] for name in self._values + self._coords}
 
     @classmethod
@@ -745,7 +745,7 @@ class ObservableTree(metaclass=RegisteredObservable):
         return state
 
     def __setstate__(self, state):
-        self._attrs = state['attrs']
+        self._attrs = state.get('attrs', {})
         if 'leaves' in state:
             leaves = state['leaves']
             self._leaves = [ObservableTree.from_state(leaf) for leaf in leaves]
