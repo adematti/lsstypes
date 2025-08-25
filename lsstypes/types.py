@@ -1,11 +1,11 @@
 import numpy as np
 
-from .base import ObservableLeaf, BinnedObservableLeaf, ObservableTree, register_type
+from .base import ObservableLeaf, ObservableTree, register_type
 from .utils import plotter
 
 
 @register_type
-class Mesh2SpectrumPole(BinnedObservableLeaf):
+class Mesh2SpectrumPole(ObservableLeaf):
 
     _name = 'mesh2spectrumpole'
     _binweight = 'nmodes'
@@ -103,7 +103,7 @@ class Mesh2SpectrumPoles(ObservableTree):
 
 
 @register_type
-class Count2(BinnedObservableLeaf):
+class Count2(ObservableLeaf):
 
     """Pair counts."""
     _name = 'count2'

@@ -2,6 +2,8 @@ from pathlib import Path
 import numpy as np
 
 from lsstypes import ObservableLeaf, ObservableTree, read, write
+from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Count2
+from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood
 
 
 def test_tree():
@@ -36,6 +38,7 @@ def test_tree():
     leaf3 = leaf.at[...].select(s=(10., 80.), mu=(-0.8, 1.))
     assert leaf3.shape == leaf2.shape
     leaf4 = leaf.at(s=(10., 80.)).select(s=(20., 70.), mu=(-0.8, 1.))
+    assert len(leaf4.coords('s')) == 41
 
     tree = ObservableTree(leaves, keys=labels)
     assert tree.labels(keys_only=True) == ['keys']
@@ -45,6 +48,10 @@ def test_tree():
     assert tree2.get(keys='DD').shape != tree2.get(keys='DR').shape
     tree2 = tree.select(s=(10., 80.))
     assert tree2.get(keys='DD').shape == tree2.get(keys='DR').shape
+    assert tree.get(['DD', 'RR']).size == tree.size * 2 // 3
+    assert tree.get(['DD', 'RR']).get('DD') == tree.get('DD')
+    assert isinstance(tree.get('DD'), ObservableLeaf)
+    assert isinstance(tree.get(['DD']), ObservableTree)
 
     k = np.linspace(0., 0.2, 21)
     spectrum = rng.uniform(size=k.size)
@@ -65,22 +72,127 @@ def test_tree():
     assert tree3 == tree2
 
 
+def test_at():
+
+    def get_poles(seed=None):
+        ells = [0, 2, 4]
+        rng = np.random.RandomState(seed=seed)
+        poles = []
+        for ell in ells:
+            k_edges = np.linspace(0., 0.2, 41)
+            k_edges = np.column_stack([k_edges[:-1], k_edges[1:]])
+            k = np.mean(k_edges, axis=-1)
+            poles.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
+        return Mesh2SpectrumPoles(poles, ells=ells)
+
+    poles = get_poles()
+    at = poles.at(2)
+    at._hook = lambda new, transform: new
+    poles2 = at.select(k=slice(0, None, 2))
+    poles2 = poles.at(0).select(k=(0., 0.1))
+    assert poles2.get(0).k.size == poles.get(0).k.size // 2
+
+    poles2 = poles.at(2).at(k=(0.04, 0.14)).select(k=slice(0, None, 2))
+    assert len(poles2.get(2).k) < len(poles.get(2).k)
+
+    poles2 = poles.at(2).at(k=(0.04, 0.14)).select(k=(0.1, 0.12)) #slice(0, None, 2))
+    assert len(poles2.get(2).k) == 24
+
+    def get_counts():
+        s_edges = np.linspace(0., 100., 21)
+        s_edges = np.column_stack([s_edges[:-1], s_edges[1:]])
+        mu_edges = np.linspace(-1., 1., 11)
+        mu_edges = np.column_stack([mu_edges[:-1], mu_edges[1:]])
+        s, mu = np.mean(s_edges, axis=-1), np.mean(mu_edges, axis=-1)
+        rng = np.random.RandomState(seed=42)
+        counts = 1. + rng.uniform(size=(s.size, mu.size))
+        counts = Count2(counts=counts, norm=np.ones_like(counts), s=s, mu=mu, s_edges=s_edges, mu_edges=mu_edges, coords=['s', 'mu'], attrs=dict(los='x'))
+        return counts
+
+    counts = get_counts()
+    tree = ObservableTree([counts, counts], keys=['DD', 'RR'])
+    at = tree.at('DD')
+    at._hook = lambda new, transform: new
+    tree2 = at.select(mu=slice(0, None, 2))
+    assert tree2.get('DD').shape[1] == tree.get('DD').shape[1] // 2
+
+
+def test_matrix():
+
+    def get_poles(size=40, seed=None):
+        ells = [0, 2, 4]
+        rng = np.random.RandomState(seed=seed)
+        poles = []
+        for ell in ells:
+            k_edges = np.linspace(0., 0.2, size + 1)
+            k_edges = np.column_stack([k_edges[:-1], k_edges[1:]])
+            k = np.mean(k_edges, axis=-1)
+            poles.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
+        return Mesh2SpectrumPoles(poles, ells=ells)
+
+    observable = get_poles(size=40)
+    theory = get_poles(size=60)
+    rng = np.random.RandomState(seed=None)
+    value = rng.uniform(0., 1., size=(40 * 3, 60 * 3))
+    winmat = WindowMatrix(value=value, observable=observable, theory=theory)
+    obs = winmat.observable.select(k=slice(0, None, 2))
+    assert isinstance(obs, Mesh2SpectrumPoles)
+
+    matrix2 = winmat.at.theory.select(k=slice(0, None, 2))
+    assert matrix2.shape[1] == winmat.shape[1] // 2
+
+    def test(matrix):
+        matrix2 = matrix.at.observable.at(2).select(k=slice(0, None, 2))
+        assert matrix2.shape[0] < matrix.shape[0]
+        assert matrix2.observable.get(2).size == matrix.observable.get(2).size // 2
+
+        matrix2 = matrix.at.observable.at(2).at[...].select(k=slice(0, None, 2))
+        assert matrix2.shape[0] < matrix.shape[0]
+        assert matrix2.observable.get(2).size == matrix.observable.get(2).size // 2
+
+        matrix2 = matrix.at.observable.at(2).at(k=(0.05, 0.15)).select(k=slice(0, None, 2))
+        assert matrix2.shape[0] < matrix.shape[0]
+
+        matrix2 = matrix.at.observable.get([0, 2])
+        assert matrix2.shape[0] == matrix.shape[0] * 2 // 3
+
+    test(winmat)
+    value = rng.uniform(0., 1., size=(40 * 3, 40 * 3))
+    covmat = CovarianceMatrix(value=value, observable=observable)
+    test(covmat)
+
+    likelihood = GaussianLikelihood(observable=observable, window=winmat, covariance=covmat)
+    likelihood2 = likelihood.at.observable.select(k=(0.05, 0.15))
+    assert likelihood2.window.shape[0] < likelihood.window.shape[0]
+
+    likelihood2 = likelihood.at.observable.get([0])
+    assert likelihood2.window.shape[0] < likelihood.window.shape[0]
+
+
 def test_rebin():
 
-    from lsstypes import Count2
+    def get_counts():
+        s_edges = np.linspace(0., 100., 21)
+        s_edges = np.column_stack([s_edges[:-1], s_edges[1:]])
+        mu_edges = np.linspace(-1., 1., 11)
+        mu_edges = np.column_stack([mu_edges[:-1], mu_edges[1:]])
+        s, mu = np.mean(s_edges, axis=-1), np.mean(mu_edges, axis=-1)
+        rng = np.random.RandomState(seed=42)
+        counts = 1. + rng.uniform(size=(s.size, mu.size))
+        counts = Count2(counts=counts, norm=np.ones_like(counts), s=s, mu=mu, s_edges=s_edges, mu_edges=mu_edges, coords=['s', 'mu'], attrs=dict(los='x'))
+        return counts
 
-    s_edges = np.linspace(0., 100., 21)
-    s_edges = np.column_stack([s_edges[:-1], s_edges[1:]])
-    mu_edges = np.linspace(-1., 1., 11)
-    mu_edges = np.column_stack([mu_edges[:-1], mu_edges[1:]])
-    s, mu = np.mean(s_edges, axis=-1), np.mean(mu_edges, axis=-1)
-    rng = np.random.RandomState(seed=42)
-    counts = 1. + rng.uniform(size=(s.size, mu.size))
-    counts = Count2(counts=counts, s=s, mu=mu, s_edges=s_edges, mu_edges=mu_edges, coords=['s', 'mu'], attrs=dict(los='x'))
-    counts2 = counts.rebin(s=slice(0, None, 2))
+    counts = get_counts()
+    matrix = counts._transform(slice(1, None, 2), axis=1, full=True, weighted=False)
+    assert matrix.shape[1] == counts.size
+    tmp = matrix.dot(counts.counts.ravel())
+    matrix = counts._transform(slice(1, None, 2), axis=1, weighted=False)
+    tmp2 = np.moveaxis(np.tensordot(matrix, counts.counts, axes=(1, 1)), 0, 1).ravel()
+    assert np.allclose(tmp, tmp2)
+    counts2 = counts.select(s=slice(0, None, 2))
     assert counts2.shape[0] == counts.shape[0] // 2
     assert np.allclose(np.mean(counts2.counts), 2 * np.mean(counts.counts))
-    counts3 = counts2.rebin(mu=slice(0, None, 2))
+    counts3 = counts2.select(mu=slice(0, None, 2))
     assert counts3.shape[1] == counts.shape[1] // 2
     assert np.allclose(np.mean(counts3.counts), 2 * np.mean(counts2.counts))
 
@@ -88,8 +200,6 @@ def test_rebin():
 def test_types():
 
     test_dir = Path('_tests')
-
-    from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles
 
     def get_poles(seed=None):
         ells = [0, 2, 4]
@@ -104,7 +214,7 @@ def test_types():
 
     poles = get_poles()
     poles.plot(show=True)
-    poles2 = poles.rebin(k=slice(0, None, 2))
+    poles2 = poles.select(k=slice(0, None, 2))
 
     fn = test_dir / 'spectrum.txt'
     poles.write(fn)
@@ -181,7 +291,7 @@ def test_external():
     pypoles = generate_pypower()
     poles = from_pypower(pypoles)
     assert np.allclose(poles.value(), pypoles.power.ravel())
-    poles = poles.rebin(k=slice(0, None, 2))
+    poles = poles.select(k=slice(0, None, 2))
     pypoles = pypoles[:(pypoles.shape[0] // 2) * 2:2]
     assert np.allclose(poles.get(0).coords('k'), pypoles.k, equal_nan=True)
     assert np.allclose(poles.value(), pypoles.power.ravel())
@@ -190,7 +300,7 @@ def test_external():
     corr = from_pycorr(pycorr)
     assert np.allclose(corr.coords(axis='s'), pycorr.sepavg(axis=0), equal_nan=True)
     assert np.allclose(corr.value(), pycorr.corr, equal_nan=True)
-    corr = corr.rebin(s=slice(0, None, 2))
+    corr = corr.select(s=slice(0, None, 2))
     pycorr = pycorr[:(pycorr.shape[0] // 2) * 2:2]
     assert np.allclose(corr.coords(axis='s'), pycorr.sepavg(axis=0), equal_nan=True)
     assert np.allclose(corr.value(), pycorr.corr, equal_nan=True)
@@ -199,7 +309,7 @@ def test_external():
     corr = from_pycorr(pycorr)
     assert np.allclose(corr.coords(axis='s'), pycorr.sepavg(axis=0), equal_nan=True)
     assert np.allclose(corr.value(), pycorr.corr, equal_nan=True)
-    corr = corr.rebin(s=slice(0, None, 2))
+    corr = corr.select(s=slice(0, None, 2))
     pycorr = pycorr[:(pycorr.shape[0] // 2) * 2:2]
     assert np.allclose(corr.coords(axis='s'), pycorr.sepavg(axis=0), equal_nan=True)
     assert np.allclose(corr.value(), pycorr.corr, equal_nan=True)
@@ -207,8 +317,10 @@ def test_external():
 
 if __name__ == '__main__':
 
-    #test_tree()
-    #test_types()
+    test_tree()
+    test_types()
     #test_sparse()
-    #test_rebin()
+    test_rebin()
     test_external()
+    test_at()
+    test_matrix()
