@@ -522,11 +522,20 @@ class ObservableLeaf(object):
             mask[sl] = True
             return mask
 
-        self_coords = self.coords(axis=axis, center=center)
-        self_coords = self_coords[(Ellipsis,) + (None,) * (2 - self_coords.ndim)]
+        def _isin2d(array1, array2):
+            if array1.ndim == array2.ndim == 1: return np.isin(array1, array2)
+            assert len(array1) == len(array2)
+            toret = True
+            for a1, a2 in zip(array1, array2): toret &= np.isin(a1, a2)
+            return toret
+
+        _self_coords = self.coords(axis=axis, center=center)
+        self_coords = _self_coords[(Ellipsis,) + (None,) * (2 - _self_coords.ndim)]
         ndim = self_coords.shape[1]
         if isinstance(limit, ObservableLeaf):
-            limit = limit.edges(axis=axis)
+            _limit = limit.edges(axis=axis)
+            if _limit is not None: limit = _limit
+            else: limit = limit.coords(axis=axis)
         selection_only = False
         if isinstance(limit, (tuple, list, slice)):  # (), slice(...), (slice(...), slice(...), ...), ()
             if isinstance(limit, slice) or not isinstance(limit[0], tuple):
@@ -540,9 +549,16 @@ class ObservableLeaf(object):
                 selection_only &= (not isinstance(lim, slice)) or lim.step == 1
                 limit[iaxis] = lim
             limit += [_format_slice(None, self_coords[..., iaxis]) for iaxis in range(len(limit), ndim)]
+        else:
+            selection_only = np.ndim(limit) == _self_coords.ndim  # coords and not edges
+
         if selection_only:
-            limit = [_mask_from_slice(lim, self_coords[..., iaxis].size) if isinstance(lim, slice) else lim for iaxis, lim in enumerate(limit)]
-            mask = np.logical_and.reduce(limit)
+            if isinstance(limit, list):
+                limit = [_mask_from_slice(lim, self_coords[..., iaxis].size) if isinstance(lim, slice) else lim for iaxis, lim in enumerate(limit)]
+                mask = np.logical_and.reduce(limit)
+            else:
+                mask = _isin2d(_self_coords, limit)
+                assert np.allclose(_self_coords[mask], limit), 'need to handle the fact that coords may not be order the same way, please file a github issue'
             if return_edges:
                 edges = self.edges(axis=axis)
                 if edges is not None: edges = edges[mask]
@@ -569,16 +585,12 @@ class ObservableLeaf(object):
             else:
                 edges1d = [get_1d_slice(e, s) for e, s in zip(get_unique_edges(self_edges), limit)]
 
-                def isin2d(array1, array2):
-                    assert len(array1) == len(array2)
-                    toret = True
-                    for a1, a2 in zip(array1, array2): toret &= np.isin(a1, a2)
-                    return toret
-
                 # This is to keep the same ordering
-                upedges = self_edges[..., 1][isin2d(self_edges[..., 1].T, [e[..., 1] for e in edges1d])]
+                upedges = self_edges[..., 1][_isin2d(self_edges[..., 1].T, [e[..., 1] for e in edges1d])]
                 lowedges = np.column_stack([edges1d[iax][..., 0][np.searchsorted(edges1d[iax][..., 1], upedges[..., iax])] for iax in range(ndim)])
                 edges = np.concatenate([lowedges[..., None], upedges[..., None]], axis=-1)
+        else:
+            edges = limit
 
         iaxis = self._coords_names.index(axis)
         # Broadcast iedges[:, None, :] against edges[None, :, :]
@@ -691,6 +703,10 @@ class ObservableLeaf(object):
                         shape = tuple(len(new._data[axis]) for axis in new._coords_names)
                         new._data[name] = _matrix.dot(tmp.ravel()).reshape(shape)
         return new
+
+    def match(self, observable):
+        """Match coordinates to those of input observable."""
+        return self.select(**{axis: observable for axis in self._coords_names})
 
     @property
     def at(self):
@@ -810,6 +826,80 @@ class _ObservableLeafUpdateHelper(object):
         return _ObservableLeafUpdateRef(self._observable, masks, self._hook)
 
 
+def _pad_transform(transform, start, size):
+    if transform.ndim == 1:
+        mask = np.ones(size, dtype='?')
+        mask[start:start + transform.size] = transform.ravel()
+        return mask
+
+    try:
+        import scipy.sparse as sp
+    except ImportError:
+        sp = None
+
+    stop = start + transform.shape[1]
+    if sp is None:
+        matrix = np.zeros((start + transform.shape[0] + (size - stop), size), dtype=transform.dtype)
+        matrix[np.arange(start), np.arange(start)] = 1
+        matrix[np.ix_(np.arange(start, start + transform.shape[0]), np.arange(start, stop))] = transform
+        matrix[np.arange(size - stop, size), np.arange(size - stop, size)] = 1
+    else:
+        matrix = sp.block_diag([sp.identity(start, dtype=transform.dtype, format='csr'),
+                                sp.csr_matrix(transform),
+                                sp.identity(size - stop, dtype=transform.dtype, format='csr')], format='csr')
+    return matrix
+
+
+def _join_transform(cum_transform, transform):
+    if cum_transform is None:
+        return transform
+    else:
+        if cum_transform.ndim < transform.ndim:
+            cum_transform = _build_matrix_from_mask(cum_transform)
+        elif cum_transform.ndim > transform.ndim:
+            transform = _build_matrix_from_mask(transform)
+        if cum_transform.ndim == 2:
+            cum_transform = transform.dot(cum_transform)
+        else:
+            cum_transform = cum_transform.copy()
+            cum_transform[cum_transform] = transform
+        return cum_transform
+
+
+def _concatenate_transforms(transforms, starts, size):
+    assert len(transforms) == len(starts)
+    is2d = any(transform.ndim == 2 for transform in transforms)
+    if is2d:
+        transforms = [_build_matrix_from_mask(transform) if transform.ndim < 2 else transform for transform in transforms]
+        try:
+            import scipy.sparse as sp
+        except ImportError:
+            sp = None
+        if sp is None:
+            def _pad(transform, start, size):
+                toret = np.zeros_like(transform, shape=(transform.shape[0], size))
+                toret[:, start:start + transform.shape[1]] = transform
+                return toret
+
+            transforms = [_pad(transform, start, size) for start, transform in zip(starts, transforms)]
+            matrix = np.concatenate(transforms, axis=0)
+        else:
+            def _pad(transform, start, size):
+                m = [sp.csr_matrix((transform.shape[0], start)),
+                     sp.csr_matrix(transform),
+                     sp.csr_matrix((transform.shape[0], size - start - transform.shape[1]))]
+                return sp.hstack(m)
+
+            transforms = [_pad(transform, start, size) for start, transform in zip(starts, transforms)]
+            matrix = sp.vstack(transforms)
+
+        return matrix
+    else:
+        transforms = [np.flatnonzero(transform) if not np.issubdtype(transform.dtype, np.integer) else transform for transform in transforms]
+        transforms = [start + transform for start, transform in zip(starts, transforms)]
+        return np.concatenate(transforms, axis=0)
+
+
 class _ObservableLeafUpdateRef(object):
 
     def __init__(self, observable, masks=None, hook=None):
@@ -840,7 +930,6 @@ class _ObservableLeafUpdateRef(object):
             sub = new.select(**{axis: slice(start, stop)})
 
             sub_transform = sub._transform(limit=limits[axis], axis=axis, center=center, full=True if self._hook is not None else None)
-            is_compressed_2d = sub_transform.ndim == 2 and sub_transform.shape[1] == sub.shape[iaxis]
             sub = sub.select(**{axis: limits[axis]}, center=center)
             sub._data[axis] = np.concatenate([new.coords(axis)[:start], sub.coords(axis), new.coords(axis)[stop:]], axis=0)
             axis_edges = f'{axis}_edges'
@@ -848,56 +937,46 @@ class _ObservableLeafUpdateRef(object):
                 sub._data[axis_edges] = np.concatenate([self._observable.edges(axis)[:start], sub.edges(axis), self._observable.edges(axis)[stop:]], axis=0)
             shape = tuple(len(sub._data[axis]) for axis in sub._coords_names)
 
-            if sub_transform.ndim == 1:
-                mask1d = np.ones(new.shape[iaxis], dtype='?')
-                mask1d[start:stop] = sub_transform
-                transform = _make_mask(mask1d).ravel()
-            elif is_compressed_2d:  # compressed version
-                new_mask1d = np.zeros(new.shape[iaxis], dtype='?')
-                new_mask1d[start:stop] = True
-                sub_mask1d = np.zeros(shape[iaxis], dtype='?')
-                sub_mask1d[start:shape[iaxis]-(new.shape[iaxis] - stop)] = True
-                if len(shape) == 1:
-                    transform = sub_transform.dot(_build_matrix_from_mask(new_mask1d, toarray=True))
-            else:
-                # with hook
-                transform = sub_transform.dot(_build_matrix_from_mask(_make_mask(slice(start, stop)).ravel()))
-
-            for name in sub._values_names:
-                if sub_transform.ndim == 1:
-                    sub._data[name] = np.take(new._data[name], np.flatnonzero(mask1d), axis=iaxis)
-                else:
-                    tmp = _nan_to_zero(new._data[name])
-                    if is_compressed_2d:  # compressed version
-                        value = np.zeros_like(sub._data[name], shape=shape)
-                        np.put_along_axis(value,
-                                          np.flatnonzero(~sub_mask1d),
-                                          np.take(tmp, np.flatnonzero(~new_mask1d), axis=iaxis), axis=iaxis)
-                        np.put_along_axis(value,
-                                          np.flatnonzero(sub_mask1d),
-                                          np.moveaxis(np.tensordot(sub_transform, np.take(tmp, np.flatnonzero(new_mask1d), axis=iaxis), axes=([1], [iaxis])), 0, iaxis),
-                                          axis=iaxis)
-                        sub._data[name] = value
-                    else:
-                        sub._data[name] = transform.dot(tmp.ravel()).reshape(shape)
+            new_mask1d = np.zeros(new.shape[iaxis], dtype='?')
+            new_mask1d[start:stop] = True
+            sub_mask1d = np.zeros(shape[iaxis], dtype='?')
+            sub_mask1d[start:shape[iaxis]-(new.shape[iaxis] - stop)] = True
 
             if self._hook is not None:
-                if cum_transform is None:
-                    cum_transform = transform
+                if sub_transform.ndim == 1:
+                    mask1d = np.ones(new.shape[iaxis], dtype='?')
+                    mask1d[start:stop] = sub_transform
+                    transform = _make_mask(mask1d).ravel()
                 else:
-                    if cum_transform.ndim < transform.ndim:
-                        cum_transform = _build_matrix_from_mask(cum_transform)
-                    elif cum_transform.ndim > transform.ndim:
-                        transform = _build_matrix_from_mask(transform)
-                    if cum_transform.ndim == 2:
-                        cum_transform = transform.dot(cum_transform)
+                    if len(shape) == 1:
+                        transform = sub_transform.dot(_build_matrix_from_mask(new_mask1d, toarray=True))
                     else:
-                        cum_transform[cum_transform] = transform
+                        # with hook
+                        transform = sub_transform.dot(_build_matrix_from_mask(_make_mask(slice(start, stop)).ravel()))
+
+            def put(value, mask, array, axis=iaxis):
+                masks = [np.ones(s, dtype='?') for s in new.shape]
+                masks[axis] = mask
+                value[np.ix_(*masks)] = array
+
+            for name in sub._values_names:
+                tmp = _nan_to_zero(new._data[name])
+                value = np.zeros_like(sub._data[name], shape=shape)
+                put(value, np.flatnonzero(~sub_mask1d), np.take(tmp, np.flatnonzero(~new_mask1d), axis=iaxis), axis=iaxis)
+                put(value, np.flatnonzero(sub_mask1d), sub._data[name], axis=iaxis)
+                sub._data[name] = value
+
+            if self._hook is not None:
+                cum_transform = _join_transform(cum_transform, transform)
             new = sub
 
         if self._hook is not None:
             return self._hook(new, transform=cum_transform)
         return new
+
+    def match(self, observable):
+        """Match coordinates to those of input observable."""
+        return self.select(**{axis: observable for axis in self._observable._coords_names})
 
 
 def _iter_on_tree(f, tree, level=None):
@@ -909,7 +988,9 @@ def _iter_on_tree(f, tree, level=None):
     return toret
 
 
-def _get_leaf(tree, index):
+def _get_leaf(tree, index=None):
+    if index is None:
+        return tree
     toret = tree._leaves[index[0]]
     if len(index) == 1:
         return toret
@@ -1100,13 +1181,27 @@ class ObservableTree(object):
                         leaf = get_subtree(tree, indices[ileaf])
                     leaves.append(leaf)
                     ileaves.append(ileaf)
-            tree = tree.copy()
-            tree._leaves = leaves
-            tree._labels = {k: [v[idx] for idx in ileaves] for k, v in tree._labels.items()}
-            tree._strlabels = {k: [v[idx] for idx in ileaves] for k, v in tree._strlabels.items()}
-            return tree
+            new = tree.copy()
+            new._leaves = leaves
+            new._labels = {k: [v[idx] for idx in ileaves] for k, v in tree._labels.items()}
+            new._strlabels = {k: [v[idx] for idx in ileaves] for k, v in tree._strlabels.items()}
+            return new
 
         return get_subtree(self, indices)
+
+    def match(self, observable):
+        leaves, ileaves = [], []
+        for ileaf, leaf in enumerate(observable._leaves):
+            _ileaf = self._index_labels({k: v[ileaf] for k, v in observable._labels.items()}, flatten=True)
+            assert len(_ileaf) == 1 and len(_ileaf[0]) == 1
+            _ileaf = _ileaf[0][0]
+            leaves.append(self._leaves[_ileaf].match(leaf))
+            ileaves.append(_ileaf)
+        new = self.copy()
+        new._leaves = leaves
+        new._labels = {k: [v[idx] for idx in ileaves] for k, v in self._labels.items()}
+        new._strlabels = {k: [v[idx] for idx in ileaves] for k, v in self._strlabels.items()}
+        return new
 
     def sizes(self, level=None):
         return _iter_on_tree(lambda leaf: leaf.size, self, level=level)
@@ -1279,30 +1374,6 @@ def _replace_in_tree(tree, index, sub):
     return start, stop
 
 
-def _pad_transform(transform, start, size):
-    if transform.ndim == 1:
-        mask = np.ones(size, dtype='?')
-        mask[start:start + transform.size] = transform.ravel()
-        return mask
-
-    try:
-        import scipy.sparse as sp
-    except ImportError:
-        sp = None
-
-    stop = start + transform.shape[1]
-    if sp is None:
-        matrix = np.zeros((start + transform.shape[0] + (size - stop), size), dtype=transform.dtype)
-        matrix[np.arange(start), np.arange(start)] = 1
-        matrix[np.ix_(np.arange(start, start + transform.shape[0]), np.arange(start, stop))] = transform
-        matrix[np.arange(size - stop, size), np.arange(size - stop, size)] = 1
-    else:
-        matrix = sp.block_diag([sp.identity(start, dtype=transform.dtype, format='csr'),
-                                sp.csr_matrix(transform),
-                                sp.identity(size - stop, dtype=transform.dtype, format='csr')], format='csr')
-    return matrix
-
-
 class _ObservableTreeUpdateSingleRef(object):
 
     _tree: ObservableTree
@@ -1338,6 +1409,20 @@ class _ObservableTreeUpdateSingleRef(object):
             return self._hook(new, transform=_pad_transform(transform, start, self._tree.size))
         return new
 
+    def match(self, observable):
+        hook = None
+        if self._hook:
+            def hook(leaf, transform): return leaf, transform
+        leaf = _get_leaf(self._tree, self._index)
+        leaf = _ObservableLeafUpdateRef(leaf, masks=None, hook=hook).match(observable)
+        if self._hook:
+            leaf, transform = leaf
+        new = self._tree.copy()
+        start, stop = _replace_in_tree(new, self._index, leaf)
+        if self._hook:
+            return self._hook(new, transform=_pad_transform(transform, start, self._tree.size))
+        return new
+
     @property
     def at(self):
         at = _get_leaf(self._tree, self._index).at
@@ -1357,21 +1442,22 @@ class _ObservableTreeUpdateRef(object):
 
     def __init__(self, tree, indices=None, hook=None):
         self._tree = tree
-        if indices is None:
-            indices = self._tree._index_labels({})
         self._indices = indices
-        assert len(self._indices)
         self._hook = hook
 
     def get(self, *args, **labels):
         new = self._tree.copy()
         if self._hook is not None:
             mask = np.ones(self._tree.size, dtype='?')
-        for index in self._indices:
+        for index in (self._indices if self._indices is not None else [None]):
             leaf = _get_leaf(self._tree, index)
             _labels = _format_input_labels(leaf, *args, **labels)
             sub = leaf.get(**_labels)
-            start, stop = _replace_in_tree(new, index, sub)
+            if index is None:
+                new = sub
+                start, stop = 0, leaf.size
+            else:
+                start, stop = _replace_in_tree(new, index, sub)
             if self._hook is not None:
                 _mask = np.zeros(leaf.size, dtype='?')
                 for _index in leaf._index_labels(_labels):
@@ -1388,7 +1474,7 @@ class _ObservableTreeUpdateRef(object):
 
         new = self._tree.copy()
         transform = None
-        for index in self._indices:
+        for index in (self._indices if self._indices is not None else self._tree._index_labels({})):
             leaf = _get_leaf(self._tree, index)
             if isinstance(leaf, ObservableLeaf):
                 leaf = _ObservableLeafUpdateRef(leaf, hook=hook).select(**limits)
@@ -1400,10 +1486,56 @@ class _ObservableTreeUpdateRef(object):
             start, stop = _replace_in_tree(new, index, leaf)
             if self._hook:
                 _transform = _pad_transform(_transform, start, size)
-                if transform is None: transform = _transform
-                elif transform.ndim == 1: transform[transform] = _transform
-                else: transform = _transform.dot(transform)
+                transform = _join_transform(transform, _transform)
 
+        if self._hook:
+            return self._hook(new, transform=transform)
+        return new
+
+    def match(self, observable):
+        hook = None
+        if self._hook:
+            def hook(leaf, transform): return leaf, transform
+
+        if self._indices is not None:
+            assert len(self._indices) == 1, 'match can only be applied to a tree or leaf'
+            index = self._indices[0]
+        else:
+            index = None
+        tree = _get_leaf(self._tree, index)
+        transforms, starts = [], []
+        leaves, ileaves = [], []
+        for ileaf, leaf in enumerate(observable._leaves):
+            _ileaf = tree._index_labels({k: v[ileaf] for k, v in observable._labels.items()}, flatten=True)
+            assert len(_ileaf) == 1 and len(_ileaf[0]) == 1
+            _ileaf = _ileaf[0][0]
+            _leaf = tree._leaves[_ileaf]
+            if isinstance(_leaf, ObservableLeaf):
+                leaf = _ObservableLeafUpdateRef(_leaf, hook=hook).match(leaf)
+            else:
+                leaf = _ObservableTreeUpdateRef(_leaf, hook=hook).match(leaf)
+            if self._hook:
+                leaf, _transform = leaf
+            leaves.append(leaf)
+            ileaves.append(_ileaf)
+            size = tree.size
+            if self._hook:
+                start, stop = _get_range_in_tree(tree, (_ileaf,))
+                transforms.append(_transform)
+                starts.append(start)
+
+        if self._hook:
+            transform = _concatenate_transforms(transforms, starts, tree.size)
+        tree = tree.copy()
+        tree._leaves = leaves
+        tree._labels = {k: [v[idx] for idx in ileaves] for k, v in tree._labels.items()}
+        tree._strlabels = {k: [v[idx] for idx in ileaves] for k, v in tree._strlabels.items()}
+        new = tree
+        if index is not None:
+            new = self._tree.copy()
+            start, stop = _replace_in_tree(new, (index,), tree)
+            if self._hook:
+                transform = _pad_transform(transform, start, self._tree.size)
         if self._hook:
             return self._hook(new, transform=transform)
         return new
@@ -1440,6 +1572,12 @@ class _ObservableWindowMatrixUpdateHelper(object):
         kw = {_observable_name: observable}
         return self._matrix.clone(value=value, **kw)
 
+    def match(self, observable):
+        def hook(observable, transform):
+            return observable, transform
+        observable, transform = (_ObservableLeafUpdateRef if isinstance(self._observable, ObservableLeaf) else _ObservableTreeUpdateRef)(self._observable, hook=hook).match(observable)
+        return self._select(observable, transform=transform)
+
     def select(self, **limits):
         def hook(observable, transform):
             return observable, transform
@@ -1447,13 +1585,11 @@ class _ObservableWindowMatrixUpdateHelper(object):
         return self._select(observable, transform=transform)
 
     def get(self, *args, **labels):
-        assert not isinstance(self._observable, ObservableLeaf), 'get only applies to a tree'
-        labels = _format_input_labels(self._observable, *args, **labels)
-        observable = self._observable.get(**labels)
-        mask = np.zeros(self._observable.size, dtype='?')
-        for _index in self._observable._index_labels(labels):
-            mask[slice(*_get_range_in_tree(self._observable, _index))] = True
-        return self._select(observable, transform=mask)
+        assert isinstance(self._observable, ObservableTree), 'get only applies to a tree'
+        def hook(observable, transform):
+            return observable, transform
+        observable, transform = _ObservableTreeUpdateRef(self._observable, hook=hook).get(*args, **labels)
+        return self._select(observable, transform=transform)
 
     @property
     def at(self):
@@ -1650,23 +1786,41 @@ class _ObservableGaussianLikelihoodUpdateHelper(object):
         self._axis = axis
         self._observable_name = ['observable', 'theory'][self._axis]
 
-    def select(self, **limits):
-        window = getattr(self._likelihood.window.at, self._observable_name).select(**limits)
-        observable = self._likelihood.observable
-        covariance = self._likelihood.covariance
+    def _select(self, observable):
         if self._axis == 0:
-            observable = observable.select(**limits)
-            covariance = covariance.at.observable.select(**limits)
-        return self._likelihood.clone(observable=observable, window=window, covariance=covariance)
+            covariance = self._likelihood.covariance.at.observable.match(observable)
+            window = self._likelihood.window.at.observable.match(observable)
+            observable = self._likelihood.observable.match(observable)
+            return self._likelihood.clone(observable=observable, window=window, covariance=covariance)
+        window = self._likelihood.window.at.theory.match(observable)
+        return self._likelihood.clone(window=window)
+
+    def match(self, observable):
+        return self._select(observable)
+
+    def select(self, **limits):
+        if self._axis == 0:
+            observable = self._likelihood.observable.select(**limits)
+        else:
+            observable = self._likelihood.window.theory.select(**limits)
+        return self._select(observable)
 
     def get(self, *args, **labels):
-        window = getattr(self._likelihood.window.at, self._observable_name).get(*args, **labels)
-        observable = self._likelihood.observable
-        covariance = self._likelihood.covariance
         if self._axis == 0:
-            observable = observable.get(*args, **labels)
-            covariance = covariance.at.observable.get(*args, **labels)
-        return self._likelihood.clone(observable=observable, window=window, covariance=covariance)
+            observable = self._likelihood.observable.get(*args, **labels)
+        else:
+            observable = self._likelihood.window.theory.get(*args, **labels)
+        return self._select(observable)
+
+    @property
+    def at(self):
+        def hook(sub, transform=None):
+            return self._select(sub)
+        if self._axis == 0:
+            observable = self._likelihood.observable
+        else:
+            observable = self._likelihood.window.theory
+        return (_ObservableLeafUpdateHelper if isinstance(observable, ObservableLeaf) else _ObservableTreeUpdateHelper)(observable, hook=hook)
 
 
 @register_type

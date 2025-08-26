@@ -53,6 +53,11 @@ def test_tree():
     assert isinstance(tree.get('DD'), ObservableLeaf)
     assert isinstance(tree.get(['DD']), ObservableTree)
 
+    RR = tree.get('RR').select(mu=(-0.8, 0.7))
+    DD = tree.get('DD').match(RR)
+    assert DD.shape == RR.shape
+    assert np.allclose(DD.mu, RR.mu)
+
     k = np.linspace(0., 0.2, 21)
     spectrum = rng.uniform(size=k.size)
     leaf = ObservableLeaf(spectrum=spectrum, k=k, coords=['k'], attrs=dict(los='x'))
@@ -167,6 +172,9 @@ def test_matrix():
 
     likelihood2 = likelihood.at.observable.get([0])
     assert likelihood2.window.shape[0] < likelihood.window.shape[0]
+
+    likelihood2 = likelihood.at.observable.at(2).at[...].select(k=slice(0, None, 2))
+    assert likelihood2.observable.get(2).size == likelihood.observable.get(2).size // 2
 
 
 def test_rebin():
