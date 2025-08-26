@@ -192,11 +192,12 @@ def read(filename):
 
 
 def _format_masks(shape, masks):
+    # Return indices
     if not isinstance(masks, tuple): masks = (masks,)
     alls = [np.arange(s) for s in shape]
     masks = masks + (Ellipsis,) * (len(shape) - len(masks))
-    masks = tuple(a[m] for a, m in zip(alls, masks))
-    return masks
+    indices = tuple(a[m] for a, m in zip(alls, masks))
+    return indices
 
 
 def _tensor_product(*arrays):
@@ -297,28 +298,29 @@ def _build_big_tensor(m, shape, axis):
     return M, out_shape
 
 
-def _build_matrix_from_mask(mask, toarray=False):
-    idx = np.flatnonzero(mask)
+def _build_matrix_from_mask(mask, size=None, toarray=False):
     # Build sparse selection matrix
+    if np.issubdtype(mask.dtype, np.integer):
+        idx = mask
+        nin = size
+    else:
+        idx = np.flatnonzero(mask)
+        nin = len(mask)
     nout = len(idx)
-    nin = len(mask)
     try:
         import scipy.sparse as sp
-
-        def get():
-            toret = sp.csr_matrix((np.ones(nout, dtype=int), (np.arange(nout), idx)), shape=(nout, nin))
-            if toarray:
-                return toret.toarray()
-            return toret
-
     except ImportError:
+        sp = None
 
-        def get():
-            matrix = np.zeros((nout, nin), dtype=int)
-            matrix[np.arange(nout), idx] = 1
-            return matrix
+    if sp is not None:
+        matrix = sp.csr_matrix((np.ones(nout, dtype=int), (np.arange(nout), idx)), shape=(nout, nin))
+        if toarray:
+            return matrix.toarray()
+        return matrix
 
-    return get()
+    matrix = np.zeros((nout, nin), dtype=int)
+    matrix[np.arange(nout), idx] = 1
+    return matrix
 
 
 def _nan_to_zero(array):
@@ -476,16 +478,17 @@ class ObservableLeaf(object):
         -------
         ObservableLeaf
         """
-        masks = _format_masks(self.shape, masks)
-        mask = np.ix_(*masks)
+        indices = _format_masks(self.shape, masks)
+        # Those are indices
+        index = np.ix_(*indices)
         new = self.copy()
         for name in self._values_names:
-            new._data[name] = self._data[name][mask]
-        for axis, mask in zip(self._coords_names, masks):
-            new._data[axis] = new._data[axis][mask]
+            new._data[name] = self._data[name][index]
+        for axis, index in zip(self._coords_names, indices):
+            new._data[axis] = new._data[axis][index]
             axis_edges = f'{axis}_edges'
             if axis_edges in new._data:
-                new._data[axis_edges] = new._data[axis_edges][mask]
+                new._data[axis_edges] = new._data[axis_edges][index]
         return new
 
     def _transform(self, limit, axis=0, weighted=True, normalize=True, full=None, return_edges=False, center='mid_if_edges'):
@@ -556,14 +559,24 @@ class ObservableLeaf(object):
             if isinstance(limit, list):
                 limit = [_mask_from_slice(lim, self_coords[..., iaxis].size) if isinstance(lim, slice) else lim for iaxis, lim in enumerate(limit)]
                 mask = np.logical_and.reduce(limit)
+                index = np.flatnonzero(mask)
             else:
-                mask = _isin2d(_self_coords, limit)
-                assert np.allclose(_self_coords[mask], limit), 'need to handle the fact that coords may not be order the same way, please file a github issue'
+                if _self_coords.ndim == 2:
+
+                    def view(a):
+                        return a.view([('', a.dtype)] * a.shape[1])
+
+                    s_self_coords, s_limit = view(_self_coords), view(limit)
+                else:
+                    s_self_coords, s_limit = _self_coords, limit
+                _, ind1, ind2 = np.intersect1d(s_self_coords, s_limit, return_indices=True)
+                index = ind1[np.argsort(ind2)]
+                assert np.allclose(_self_coords[index], limit), f'Cannot match coords {_self_coords} to input {limit}'
             if return_edges:
                 edges = self.edges(axis=axis)
-                if edges is not None: edges = edges[mask]
-                return mask, edges
-            return mask
+                if edges is not None: edges = edges[index]
+                return index, edges
+            return index
 
         def get_unique_edges(edges):
             return [np.unique(edges[:, iax], axis=0) for iax in range(edges.shape[1])]
@@ -675,12 +688,12 @@ class ObservableLeaf(object):
             axis_edges = f'{axis}_edges'
             transform, edges = new._transform(limit, axis=axis, weighted=False, normalize=False, return_edges=True, center=center)
             if transform.ndim == 1:  # mask
-                mask = transform
+                index = transform
                 for name in new._values_names:
-                    new._data[name] = np.take(new._data[name], np.flatnonzero(mask), axis=iaxis)
-                new._data[axis] = new._data[axis][mask]
+                    new._data[name] = np.take(new._data[name], index, axis=iaxis)
+                new._data[axis] = new._data[axis][index]
                 if axis_edges in new._data:
-                    new._data[axis_edges] = new._data[axis_edges][mask]
+                    new._data[axis_edges] = new._data[axis_edges][index]
             else:  # matrix
                 matrix = transform
                 nwmatrix_reduced = new._transform(limit, axis=axis, weighted=True, normalize=True, full=False)
@@ -814,20 +827,22 @@ class _ObservableLeafUpdateHelper(object):
         self._hook = hook
 
     def __getitem__(self, masks):
-        masks = _format_masks(self._observable.shape, masks)
-        return _ObservableLeafUpdateRef(self._observable, masks, self._hook)
+        indices = _format_masks(self._observable.shape, masks)
+        return _ObservableLeafUpdateRef(self._observable, indices, self._hook)
 
-    def __call__(self, **limits):
-        masks = []
+    def __call__(self, center='mid_if_edges', **limits):
+        indices = []
         for axis in self._observable._coords_names:
-            transform = self._observable._transform(limits.pop(axis, None), axis=axis)
+            transform = self._observable._transform(limits.pop(axis, None), axis=axis, center=center)
             assert transform.ndim == 1, 'Only limits (min, max) are supported'
-            masks.append(transform)
-        return _ObservableLeafUpdateRef(self._observable, masks, self._hook)
+            indices.append(transform)
+        return _ObservableLeafUpdateRef(self._observable, indices, self._hook)
 
 
-def _pad_transform(transform, start, size):
+def _pad_transform(transform, start, size=None):
     if transform.ndim == 1:
+        if np.issubdtype(transform.dtype, np.integer):
+            return start + transform
         mask = np.ones(size, dtype='?')
         mask[start:start + transform.size] = transform.ravel()
         return mask
@@ -839,7 +854,7 @@ def _pad_transform(transform, start, size):
 
     stop = start + transform.shape[1]
     if sp is None:
-        matrix = np.zeros((start + transform.shape[0] + (size - stop), size), dtype=transform.dtype)
+        matrix = np.zeros_like(transform, shape=(start + transform.shape[0] + (size - stop), size))
         matrix[np.arange(start), np.arange(start)] = 1
         matrix[np.ix_(np.arange(start, start + transform.shape[0]), np.arange(start, stop))] = transform
         matrix[np.arange(size - stop, size), np.arange(size - stop, size)] = 1
@@ -850,19 +865,23 @@ def _pad_transform(transform, start, size):
     return matrix
 
 
-def _join_transform(cum_transform, transform):
+def _join_transform(cum_transform, transform, size=None):
     if cum_transform is None:
         return transform
     else:
         if cum_transform.ndim < transform.ndim:
-            cum_transform = _build_matrix_from_mask(cum_transform)
+            cum_transform = _build_matrix_from_mask(cum_transform, size=size)
         elif cum_transform.ndim > transform.ndim:
-            transform = _build_matrix_from_mask(transform)
+            transform = _build_matrix_from_mask(transform, size=size)
         if cum_transform.ndim == 2:
             cum_transform = transform.dot(cum_transform)
         else:
-            cum_transform = cum_transform.copy()
-            cum_transform[cum_transform] = transform
+            if np.issubdtype(transform.dtype, np.integer):
+                assert np.issubdtype(cum_transform.dtype, np.integer)
+                cum_transform = cum_transform[transform]
+            else:
+                cum_transform = cum_transform.copy()
+                cum_transform[cum_transform] = transform
         return cum_transform
 
 
@@ -870,7 +889,7 @@ def _concatenate_transforms(transforms, starts, size):
     assert len(transforms) == len(starts)
     is2d = any(transform.ndim == 2 for transform in transforms)
     if is2d:
-        transforms = [_build_matrix_from_mask(transform) if transform.ndim < 2 else transform for transform in transforms]
+        transforms = [_build_matrix_from_mask(transform, size=size) if transform.ndim < 2 else transform for transform in transforms]
         try:
             import scipy.sparse as sp
         except ImportError:
@@ -902,14 +921,24 @@ def _concatenate_transforms(transforms, starts, size):
 
 class _ObservableLeafUpdateRef(object):
 
-    def __init__(self, observable, masks=None, hook=None):
+    def __init__(self, observable, indices=None, hook=None):
         self._observable = observable
-        if masks is None:
+        if indices is None:
             self._limits = tuple((0, s) for s in self._observable.shape)
         else:
-            self._limits = tuple(find_single_true_slab_bounds(mask) for mask in masks)
+            self._limits = tuple(find_single_true_slab_bounds(index) for index in indices)
         self._hook = hook
         assert len(self._limits) == self._observable.ndim
+
+    def __getitem__(self, masks):
+        indices = _format_masks(self._observable.shape, masks)
+        assert len(indices) == len(self._limits)
+        indices = [start + index for start, index in zip(self._limits, indices)]
+        new = self._observable[indices]
+        if self._hook is not None:
+            transform = np.ravel_multi_index(np.meshgrid(*indices, indexing='ij'), dims=self._observable.shape).ravel()
+            return self._hook(new, transform=transform)
+        return new
 
     def select(self, center='mid_if_edges', **limits):
         new = self._observable.copy()
@@ -917,14 +946,13 @@ class _ObservableLeafUpdateRef(object):
         for iaxis, axis in enumerate(self._observable._coords_names):
             if axis not in limits: continue
 
-            def _make_mask(mask):
-                masks = [np.ones(s, dtype='?') for s in new.shape]
-                if isinstance(mask, slice):
-                    masks[iaxis][...] = False
-                    masks[iaxis][mask] = True
+            def _ravel_index(index):
+                indices = [np.arange(s) for s in new.shape]
+                if isinstance(index, slice):
+                    indices[iaxis] = np.arange(index.start, index.stop, index.step)
                 else:
-                    masks[iaxis] = mask
-                return _tensor_product(*masks)
+                    indices[iaxis] = index
+                return np.ravel_multi_index(np.meshgrid(*indices, indexing='ij'), dims=new.shape).ravel()
 
             start, stop = self._limits[iaxis]
             sub = new.select(**{axis: slice(start, stop)})
@@ -937,37 +965,34 @@ class _ObservableLeafUpdateRef(object):
                 sub._data[axis_edges] = np.concatenate([self._observable.edges(axis)[:start], sub.edges(axis), self._observable.edges(axis)[stop:]], axis=0)
             shape = tuple(len(sub._data[axis]) for axis in sub._coords_names)
 
-            new_mask1d = np.zeros(new.shape[iaxis], dtype='?')
-            new_mask1d[start:stop] = True
-            sub_mask1d = np.zeros(shape[iaxis], dtype='?')
-            sub_mask1d[start:shape[iaxis]-(new.shape[iaxis] - stop)] = True
-
             if self._hook is not None:
                 if sub_transform.ndim == 1:
-                    mask1d = np.ones(new.shape[iaxis], dtype='?')
-                    mask1d[start:stop] = sub_transform
-                    transform = _make_mask(mask1d).ravel()
+                    index1d = np.concatenate([np.arange(start), start + sub_transform, np.arange(new.shape[iaxis] - stop, new.shape[iaxis])], axis=0)
+                    transform = _ravel_index(index1d)
                 else:
                     if len(shape) == 1:
-                        transform = sub_transform.dot(_build_matrix_from_mask(new_mask1d, toarray=True))
+                        transform = sub_transform.dot(_build_matrix_from_mask(np.arange(start, stop), size=new.size, toarray=True))
                     else:
                         # with hook
-                        transform = sub_transform.dot(_build_matrix_from_mask(_make_mask(slice(start, stop)).ravel()))
+                        transform = sub_transform.dot(_build_matrix_from_mask(_ravel_index(slice(start, stop)).ravel(), size=new.size))
 
-            def put(value, mask, array, axis=iaxis):
-                masks = [np.ones(s, dtype='?') for s in new.shape]
-                masks[axis] = mask
-                value[np.ix_(*masks)] = array
+            def put(value, index, array, axis=iaxis):
+                indices = [np.arange(s) for s in new.shape]
+                indices[axis] = index
+                value[np.ix_(*indices)] = array
 
             for name in sub._values_names:
                 tmp = _nan_to_zero(new._data[name])
                 value = np.zeros_like(sub._data[name], shape=shape)
-                put(value, np.flatnonzero(~sub_mask1d), np.take(tmp, np.flatnonzero(~new_mask1d), axis=iaxis), axis=iaxis)
-                put(value, np.flatnonzero(sub_mask1d), sub._data[name], axis=iaxis)
+                i1 = np.concatenate([np.arange(start), np.arange(shape[iaxis] - (new.shape[iaxis] - stop), shape[iaxis])], axis=0)
+                i2 = np.concatenate([np.arange(start), np.arange(stop, new.shape[iaxis])], axis=0)
+                put(value, i1, np.take(tmp, i2, axis=iaxis), axis=iaxis)
+                i1 = np.arange(start, shape[iaxis] - (new.shape[iaxis] - stop))
+                put(value, i1, sub._data[name], axis=iaxis)
                 sub._data[name] = value
 
             if self._hook is not None:
-                cum_transform = _join_transform(cum_transform, transform)
+                cum_transform = _join_transform(cum_transform, transform, size=new.size)
             new = sub
 
         if self._hook is not None:
@@ -1384,15 +1409,20 @@ class _ObservableTreeUpdateSingleRef(object):
         self._index = index
         self._hook = hook
 
+    # Super easy, just duplicates
+
     def __getitem__(self, masks):
-        leaf = _get_leaf(self._tree, self._index)
-        masks = _format_masks(leaf.shape, masks)
-        sub = leaf.__getitem__(masks)
-        new = self._tree.copy()
-        start, stop = _replace_in_tree(new, self._index, sub)
+        hook = None
         if self._hook:
-            transform = np.logical_and.reduce(np.ix_(*masks)).ravel()
-            return self._hook(new, transform=_pad_transform(transform, start, self._tree.size))
+            def hook(leaf, transform): return leaf, transform
+        leaf = _get_leaf(self._tree, self._index)
+        leaf = _ObservableLeafUpdateRef(leaf, hook=hook).__getitem__(masks)
+        if self._hook:
+            leaf, transform = leaf
+        new = self._tree.copy()
+        start, stop = _replace_in_tree(new, self._index, leaf)
+        if self._hook:
+            return self._hook(new, transform=_pad_transform(transform, start, size=self._tree.size))
         return new
 
     def select(self, **limits):
@@ -1400,13 +1430,13 @@ class _ObservableTreeUpdateSingleRef(object):
         if self._hook:
             def hook(leaf, transform): return leaf, transform
         leaf = _get_leaf(self._tree, self._index)
-        leaf = _ObservableLeafUpdateRef(leaf, masks=None, hook=hook).select(**limits)
+        leaf = _ObservableLeafUpdateRef(leaf, hook=hook).select(**limits)
         if self._hook:
             leaf, transform = leaf
         new = self._tree.copy()
         start, stop = _replace_in_tree(new, self._index, leaf)
         if self._hook:
-            return self._hook(new, transform=_pad_transform(transform, start, self._tree.size))
+            return self._hook(new, transform=_pad_transform(transform, start, size=self._tree.size))
         return new
 
     def match(self, observable):
@@ -1414,13 +1444,13 @@ class _ObservableTreeUpdateSingleRef(object):
         if self._hook:
             def hook(leaf, transform): return leaf, transform
         leaf = _get_leaf(self._tree, self._index)
-        leaf = _ObservableLeafUpdateRef(leaf, masks=None, hook=hook).match(observable)
+        leaf = _ObservableLeafUpdateRef(leaf, hook=hook).match(observable)
         if self._hook:
             leaf, transform = leaf
         new = self._tree.copy()
         start, stop = _replace_in_tree(new, self._index, leaf)
         if self._hook:
-            return self._hook(new, transform=_pad_transform(transform, start, self._tree.size))
+            return self._hook(new, transform=_pad_transform(transform, start, size=self._tree.size))
         return new
 
     @property
@@ -1431,7 +1461,7 @@ class _ObservableTreeUpdateSingleRef(object):
             new = self._tree.copy()
             start, stop = _replace_in_tree(new, self._index, leaf)
             if self._hook is not None:
-                return self._hook(new, transform=_pad_transform(transform, start, self._tree.size))
+                return self._hook(new, transform=_pad_transform(transform, start, size=self._tree.size))
             return new
 
         at._hook = hook
@@ -1446,6 +1476,7 @@ class _ObservableTreeUpdateRef(object):
         self._hook = hook
 
     def get(self, *args, **labels):
+        # Order is preserved
         new = self._tree.copy()
         if self._hook is not None:
             mask = np.ones(self._tree.size, dtype='?')
@@ -1464,7 +1495,7 @@ class _ObservableTreeUpdateRef(object):
                     _mask[slice(*_get_range_in_tree(leaf, _index))] = True
                 mask[start:stop] = _mask
         if self._hook is not None:
-            return self._hook(new, transform=mask)
+            return self._hook(new, transform=np.flatnonzero(mask))
         return new
 
     def select(self, **limits):
@@ -1485,8 +1516,8 @@ class _ObservableTreeUpdateRef(object):
             size = new.size
             start, stop = _replace_in_tree(new, index, leaf)
             if self._hook:
-                _transform = _pad_transform(_transform, start, size)
-                transform = _join_transform(transform, _transform)
+                _transform = _pad_transform(_transform, start, size=size)
+                transform = _join_transform(transform, _transform, size=size)
 
         if self._hook:
             return self._hook(new, transform=transform)
@@ -1518,14 +1549,13 @@ class _ObservableTreeUpdateRef(object):
                 leaf, _transform = leaf
             leaves.append(leaf)
             ileaves.append(_ileaf)
-            size = tree.size
             if self._hook:
                 start, stop = _get_range_in_tree(tree, (_ileaf,))
                 transforms.append(_transform)
                 starts.append(start)
 
         if self._hook:
-            transform = _concatenate_transforms(transforms, starts, tree.size)
+            transform = _concatenate_transforms(transforms, starts, size=tree.size)
         tree = tree.copy()
         tree._leaves = leaves
         tree._labels = {k: [v[idx] for idx in ileaves] for k, v in tree._labels.items()}
@@ -1535,7 +1565,7 @@ class _ObservableTreeUpdateRef(object):
             new = self._tree.copy()
             start, stop = _replace_in_tree(new, (index,), tree)
             if self._hook:
-                transform = _pad_transform(transform, start, self._tree.size)
+                transform = _pad_transform(transform, start, size=self._tree.size)
         if self._hook:
             return self._hook(new, transform=transform)
         return new
@@ -1565,7 +1595,7 @@ class _ObservableWindowMatrixUpdateHelper(object):
     def _select(self, observable, transform):
         _observable_name = ['observable', 'theory'][self._axis]
         if transform.ndim == 1:  # mask
-            value = np.take(self._matrix.value(), np.flatnonzero(transform), axis=self._axis)
+            value = np.take(self._matrix.value(), transform, axis=self._axis)
         else:
             if self._axis == 0: value = transform.dot(self._matrix.value())
             else: value = transform.dot(self._matrix.value().T).T  # because transform can be a sparse matrix; works in all cases
