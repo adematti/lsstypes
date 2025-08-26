@@ -1,6 +1,6 @@
 import numpy as np
 
-from .base import ObservableLeaf, ObservableTree, register_type
+from .base import ObservableLeaf, ObservableTree, LeafLikeObservableTree, register_type
 from .utils import plotter
 
 
@@ -123,12 +123,11 @@ def _nan_to_zero(array):
 
 
 @register_type
-class Count2Jackknife(ObservableTree):
+class Count2Jackknife(LeafLikeObservableTree):
 
     """Jackknife pair counts."""
 
     _name = 'count2jackknife'
-    _is_leaf = True
 
     def __init__(self, ii_counts, ij_counts, ji_counts, realizations=None, attrs=None):
         if realizations is None:
@@ -140,21 +139,6 @@ class Count2Jackknife(ObservableTree):
         cross = ['ii'] * len(ii_counts) + ['ij'] * len(ij_counts) + ['ji'] * len(ji_counts)
         realizations = realizations * 3
         super().__init__(counts, attrs=attrs, cross=cross, realizations=realizations)
-
-    @property
-    def _coords_names(self):
-        return self._leaves[0]._coords_names
-
-    @property
-    def _values_names(self):
-        return ['counts', 'norm']
-
-    @property
-    def shape(self):
-        return self._leaves[0].shape
-
-    def edges(self, *args, **kwargs):
-        return self._leaves[0].edges(*args, **kwargs)
 
     def value(self):
         return self.values('counts') / self.values('norm')
@@ -285,11 +269,10 @@ def _get_project_mode(mode=None, **kwargs):
 
 
 @register_type
-class Count2Correlation(ObservableTree):
+class Count2Correlation(LeafLikeObservableTree):
 
     """Correlation function."""
     _name = 'count2correlation'
-    _is_leaf = True
 
     def __init__(self, estimator='landyszalay', attrs=None, **kwargs):
         with_shifted = any('S' in key for key in kwargs)
@@ -317,13 +300,6 @@ class Count2Correlation(ObservableTree):
             corr /= RR
         return np.where(nonzero, corr, np.nan)
 
-    @property
-    def shape(self):
-        return self.get('RR').shape
-
-    def edges(self, *args, **kwargs):
-        return self.get('RR').edges(*args, **kwargs)
-
     def coords(self, *args, **kwargs):
         return self.get('RR').coords(*args, **kwargs)
 
@@ -342,7 +318,6 @@ class Count2JackknifeCorrelation(Count2Correlation):
 
     """Correlation function."""
     _name = 'count2jackknifecorrelation'
-    _is_leaf = True
 
     @property
     def realizations(self):

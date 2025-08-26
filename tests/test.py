@@ -205,7 +205,7 @@ def test_rebin():
     assert np.allclose(np.mean(counts3.counts), 2 * np.mean(counts2.counts))
 
 
-def test_types():
+def test_types(show=False):
 
     test_dir = Path('_tests')
 
@@ -221,7 +221,7 @@ def test_types():
         return Mesh2SpectrumPoles(poles, ells=ells)
 
     poles = get_poles()
-    poles.plot(show=True)
+    poles.plot(show=show)
     poles2 = poles.select(k=slice(0, None, 2))
 
     fn = test_dir / 'spectrum.txt'
@@ -239,7 +239,7 @@ def test_types():
     all_poles = ObservableTree(all_poles, z=all_labels)
     all_poles.write(fn)
     all_poles = read(fn)
-    all_poles.get('z0').plot(show=True)
+    all_poles.get('z0').plot(show=show)
 
 
 def test_sparse():

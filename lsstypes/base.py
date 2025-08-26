@@ -1416,7 +1416,7 @@ class _ObservableTreeUpdateSingleRef(object):
         if self._hook:
             def hook(leaf, transform): return leaf, transform
         leaf = _get_leaf(self._tree, self._index)
-        leaf = _ObservableLeafUpdateRef(leaf, hook=hook).__getitem__(masks)
+        leaf =  _get_update_ref(leaf)(leaf, hook=hook).__getitem__(masks)
         if self._hook:
             leaf, transform = leaf
         new = self._tree.copy()
@@ -1430,7 +1430,7 @@ class _ObservableTreeUpdateSingleRef(object):
         if self._hook:
             def hook(leaf, transform): return leaf, transform
         leaf = _get_leaf(self._tree, self._index)
-        leaf = _ObservableLeafUpdateRef(leaf, hook=hook).select(**limits)
+        leaf = _get_update_ref(leaf)(leaf, hook=hook).select(**limits)
         if self._hook:
             leaf, transform = leaf
         new = self._tree.copy()
@@ -1444,7 +1444,7 @@ class _ObservableTreeUpdateSingleRef(object):
         if self._hook:
             def hook(leaf, transform): return leaf, transform
         leaf = _get_leaf(self._tree, self._index)
-        leaf = _ObservableLeafUpdateRef(leaf, hook=hook).match(observable)
+        leaf = _get_update_ref(leaf)(leaf, hook=hook).match(observable)
         if self._hook:
             leaf, transform = leaf
         new = self._tree.copy()
@@ -1507,10 +1507,7 @@ class _ObservableTreeUpdateRef(object):
         transform = None
         for index in (self._indices if self._indices is not None else self._tree._index_labels({})):
             leaf = _get_leaf(self._tree, index)
-            if isinstance(leaf, ObservableLeaf):
-                leaf = _ObservableLeafUpdateRef(leaf, hook=hook).select(**limits)
-            else:
-                leaf = _ObservableTreeUpdateRef(leaf, hook=hook).select(**limits)
+            leaf =  _get_update_ref(leaf)(leaf, hook=hook).select(**limits)
             if self._hook:
                 leaf, _transform = leaf
             size = new.size
@@ -1541,10 +1538,7 @@ class _ObservableTreeUpdateRef(object):
             assert len(_ileaf) == 1 and len(_ileaf[0]) == 1
             _ileaf = _ileaf[0][0]
             _leaf = tree._leaves[_ileaf]
-            if isinstance(_leaf, ObservableLeaf):
-                leaf = _ObservableLeafUpdateRef(_leaf, hook=hook).match(leaf)
-            else:
-                leaf = _ObservableTreeUpdateRef(_leaf, hook=hook).match(leaf)
+            leaf = _get_update_ref(_leaf)(_leaf, hook=hook).match(leaf)
             if self._hook:
                 leaf, _transform = leaf
             leaves.append(leaf)
@@ -1569,6 +1563,105 @@ class _ObservableTreeUpdateRef(object):
         if self._hook:
             return self._hook(new, transform=transform)
         return new
+
+
+@register_type
+class LeafLikeObservableTree(ObservableTree):
+    """
+    A collection of homogeneous Observable objects, supporting selection, slicing, and labeling.
+    """
+    _name = 'leaf_like_tree_base'
+    _is_leaf = True
+
+    @property
+    def _coords_names(self):
+        return self._leaves[0]._coords_names
+
+    @property
+    def _values_names(self):
+        return self._leaves[0]._values_names
+
+    @property
+    def shape(self):
+        return self._leaves[0].shape
+
+    def edges(self, *args, **kwargs):
+        return self._leaves[0].edges(*args, **kwargs)
+
+    def coords(self, *args, **kwargs):
+        return self._leaves[0].coords(*args, **kwargs)
+
+    def __getitem__(self, masks):
+        indices = _format_masks(self.shape, masks)
+        new = self.copy()
+        for ileaf, leaf in new._leaves:
+            new._leaves[ileaf] = leaf.__getitem__(indices)
+        return new
+
+    @property
+    def at(self):
+        return _LeafLikeObservableTreeHelper(self)
+
+
+def _get_update_ref(observable):
+    if isinstance(observable, ObservableLeaf):
+        return _ObservableLeafUpdateRef
+    if isinstance(observable, LeafLikeObservableTree):
+        return _LeafLikeObservableTreeUpdateRef
+    if isinstance(observable, ObservableTree):
+        return _ObservableTreeUpdateRef
+
+
+class _LeafLikeObservableTreeHelper(object):
+
+    def __init__(self, tree, hook=None):
+        self._tree = tree
+        self._hook = hook
+
+    def __getitem__(self, masks):
+        indices = _format_masks(self._tree.shape, masks)
+        return _LeafLikeObservableTreeUpdateRef(self._tree, indices, self._hook)
+
+    def __call__(self, center='mid_if_edges', **limits):
+        indices = []
+        for axis in self._tree._coords_names:
+            transform = self._tree._transform(limits.pop(axis, None), axis=axis, center=center)
+            assert transform.ndim == 1, 'Only limits (min, max) are supported'
+            indices.append(transform)
+        return _LeafLikeObservableTreeUpdateRef(self._tree, indices, self._hook)
+
+
+class _LeafLikeObservableTreeUpdateRef(object):
+
+    def __init__(self, tree, hook=None):
+        self._tree = tree
+        self._hook = hook
+
+    def __getitem__(self, masks):
+        hook = None
+        if self._hook:
+            def hook(leaf, transform): return leaf, transform
+        new = self.copy()
+        transform = None
+        for ileaf, leaf in enumerate(self._tree.leaves):
+            leaf = _get_update_ref(leaf)(leaf, hook=hook).__getitem__(masks)
+            size = new.size
+            start, stop = _replace_in_tree(new, (ileaf,), leaf)
+            if self._hook:
+                leaf, _transform = leaf
+                transform = _join_transform(transform, _transform, size=size)
+
+        if self._hook:
+            return self._hook(new, transform=transform)
+        return new
+
+    def select(self, **limits):
+        self._indices = None
+        return _ObservableTreeUpdateRef.select(self, **limits)
+
+    def match(self, observable):
+        self._indices = None
+        return _ObservableTreeUpdateRef.match(self, observable)
 
 
 class _WindowMatrixUpdateHelper(object):
@@ -1605,27 +1698,27 @@ class _ObservableWindowMatrixUpdateHelper(object):
     def match(self, observable):
         def hook(observable, transform):
             return observable, transform
-        observable, transform = (_ObservableLeafUpdateRef if isinstance(self._observable, ObservableLeaf) else _ObservableTreeUpdateRef)(self._observable, hook=hook).match(observable)
+        observable, transform =  _get_update_ref(self._observable)(self._observable, hook=hook).match(observable)
         return self._select(observable, transform=transform)
 
     def select(self, **limits):
         def hook(observable, transform):
             return observable, transform
-        observable, transform = (_ObservableLeafUpdateRef if isinstance(self._observable, ObservableLeaf) else _ObservableTreeUpdateRef)(self._observable, hook=hook).select(**limits)
+        observable, transform = _get_update_ref(self._observable)(self._observable, hook=hook).select(**limits)
         return self._select(observable, transform=transform)
 
     def get(self, *args, **labels):
         assert isinstance(self._observable, ObservableTree), 'get only applies to a tree'
         def hook(observable, transform):
             return observable, transform
-        observable, transform = _ObservableTreeUpdateRef(self._observable, hook=hook).get(*args, **labels)
+        observable, transform = _get_update_ref(self._observable)(self._observable, hook=hook).get(*args, **labels)
         return self._select(observable, transform=transform)
 
     @property
     def at(self):
         def hook(sub, transform=None):
             return self._select(sub, transform=transform)
-        return (_ObservableLeafUpdateHelper if isinstance(self._observable, ObservableLeaf) else _ObservableTreeUpdateHelper)(self._observable, hook=hook)
+        return self._observable.at.__class__(self._observable, hook=hook)
 
 
 @register_type
@@ -1850,7 +1943,7 @@ class _ObservableGaussianLikelihoodUpdateHelper(object):
             observable = self._likelihood.observable
         else:
             observable = self._likelihood.window.theory
-        return (_ObservableLeafUpdateHelper if isinstance(observable, ObservableLeaf) else _ObservableTreeUpdateHelper)(observable, hook=hook)
+        return observable.at.__class__(observable, hook=hook)
 
 
 @register_type
