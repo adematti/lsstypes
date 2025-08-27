@@ -4,6 +4,19 @@ from .types import Mesh2SpectrumPole, Mesh2SpectrumPoles, Count2, Count2Jackknif
 
 
 def from_pypower(power):
+    r"""
+    Convert a :mod:`pypower` power spectrum object to :class:`Mesh2SpectrumPoles` format.
+
+    Parameters
+    ----------
+    power : object
+        Input power spectrum object.
+
+    Returns
+    -------
+    Mesh2SpectrumPoles
+        Poles object containing the converted power spectrum data.
+    """
     ells = power.ells
     poles = []
     for ill, ell in enumerate(ells):
@@ -19,6 +32,19 @@ def from_pypower(power):
 
 
 def from_pycorr(correlation):
+    r"""
+    Convert a **pycorr** correlation object to :class:`Count2Correlation` or :class:`Count2JackknifeCorrelation` format.
+
+    Parameters
+    ----------
+    correlation : object
+        Input correlation object.
+
+    Returns
+    -------
+    Count2Correlation or Count2JackknifeCorrelation
+        Correlation object containing the converted pair counts, with jackknife support if applicable.
+    """
     counts = {}
     is_jackknife = correlation.name.startswith('jackknife')
     estimator = correlation.name.replace('jackknife-', '')

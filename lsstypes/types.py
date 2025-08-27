@@ -8,23 +8,39 @@ from .utils import plotter
 class Mesh2SpectrumPole(ObservableLeaf):
 
     _name = 'mesh2spectrumpole'
-    _binweight = 'nmodes'
-    _rebin_weighted_normalized_names = tuple(['num_raw', 'num_shotnoise', 'norm'])
 
     def __init__(self, k=None, k_edges=None, num_raw=None, num_shotnoise=None, norm=None, nmodes=None, attrs=None):
-        if num_shotnoise is None:
-            num_shotnoise = np.zeros_like(num_raw)
-        if norm is None:
-            norm = np.ones_like(num_raw)
-        if nmodes is None:
-            nmodes = np.ones_like(num_raw, dtype='i4')
-        super().__init__(k=k, k_edges=k_edges, num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes, coords=['k'], attrs=attrs)
+        self.__pre_init__(k=k, k_edges=k_edges, coords=['k'], attrs=attrs)
+        if num_shotnoise is None: num_shotnoise = np.zeros_like(num_raw)
+        if norm is None: norm = np.ones_like(num_raw)
+        if nmodes is None: nmodes = np.ones_like(num_raw, dtype='i4')
+        self._update(k=k, k_edges=k_edges, num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes)
 
-    def value(self):
-        return (self.num_raw - self.num_shotnoise) / self.norm
+    def _update(self, **kwargs):
+        self._values_names = ['value', 'num_shotnoise', 'norm', 'nmodes']
+        for name in list(kwargs):
+            if name in ['k', 'k_edges'] + self._values_names:
+                self._data[name] = kwargs.pop(name)
+        for name in list(kwargs):
+            if name in ['num_raw']:
+                self._data['value'] = (kwargs.pop(name) - self.num_shotnoise) / self.norm
+        if kwargs:
+            raise ValueError(f'Could not interpret arguments {kwargs}')
 
-    def _update_value(self, value):
-        self._data['num_raw'] = value * self.norm + self.num_shotnoise
+    def _binweight(self, name=None):
+        # weight, normalized
+        if name == 'nmodes':
+            return False, False
+        return self.nmodes, True
+
+    @classmethod
+    def _sumweight(cls, observables, name=None):
+        if name is None or name in ['value']:
+            s = sum(observable.norm for observable in observables)
+            return [observable.norm / s for observable in observables]
+        if name in ['nmodes']:
+            return None  # keep the first nmodes
+        return [1] * len(observables)  # just sum
 
     @plotter
     def plot(self, fig=None, **kwargs):
@@ -107,15 +123,44 @@ class Count2(ObservableLeaf):
 
     """Pair counts."""
     _name = 'count2'
-    _binweight = 'counts'
-    _rebin_weighted_normalized_names = tuple()
-    _rebin_weighted_names = tuple()
 
     def __init__(self, counts=None, norm=None, attrs=None, **kwargs):
-        super().__init__(counts=counts, norm=norm, attrs=attrs, **kwargs)
+        self.__pre_init__(attrs=attrs, **kwargs)
+        if norm is None: norm = np.ones_like(counts)
+        self._update(counts=counts, norm=norm)
 
-    def value(self):
-        return self.values('counts') / self.values('norm')
+    def _binweight(self, name=None):
+        # weight, normalized
+        if name is None or name == 'normalized_counts':
+            return False, False
+        if name == 'norm':
+            return False, True  # not normalized to avoid cases where weight is 0
+        return self.normalized_counts, True
+
+    def _update(self, **kwargs):
+        if 'value' in kwargs:
+            kwargs['normalized_counts'] = kwargs.pop('value')
+        self._values_names = ['normalized_counts', 'norm']
+        for name in list(kwargs):
+            if name in self._coords_names + self._values_names:
+                self._data[name] = kwargs.pop(name)
+        for name in list(kwargs):
+            if name in ['counts']:
+                self._data['normalized_counts'] = kwargs.pop(name) / self.norm
+        if kwargs:
+            raise ValueError(f'Could not interpret arguments {kwargs}')
+
+    def values(self, name=0):
+        if name == 'counts':
+            return self.normalized_counts * self.norm
+        return ObservableLeaf.values(self, name=name)
+
+    @classmethod
+    def _sumweight(cls, observables, name):
+        if name in ['normalized_counts']:
+            s = sum(observable.norm for observable in observables)
+            return [observable.norm / s for observable in observables]
+        return [1] * len(observables)  # just sum norm
 
 
 def _nan_to_zero(array):
@@ -140,14 +185,14 @@ class Count2Jackknife(LeafLikeObservableTree):
         realizations = realizations * 3
         super().__init__(counts, attrs=attrs, cross=cross, realizations=realizations)
 
-    def value(self):
-        return self.values('counts') / self.values('norm')
+    def value(self, *args, **kwargs):
+        return Count2.value(self, *args, **kwargs)
 
     def values(self, *args, **kwargs):
-        return ObservableLeaf.values(self, *args, **kwargs)
+        return Count2.values(self, *args, **kwargs)
 
     def coords(self, *args, **kwargs):
-        return ObservableLeaf.coords(self, *args, **kwargs)
+        return Count2.coords(self, *args, **kwargs)
 
     def __getattr__(self, name):
         if name in ['_data']:
@@ -158,17 +203,21 @@ class Count2Jackknife(LeafLikeObservableTree):
         return super().__getattr__(name)
 
     def _set_data(self):
-        # Set global :attr:`counts`, :attr:`norm` based on all jackknife realizations.
+        # Set global :attr:`counts`, :attr:`norm` based on all jackknife realizations
+        # Deleted after each select
         self._data = {}
         for name in ['counts', 'norm']:
             self._data[name] = sum(count.values(name) for count in self.get(cross='ii'))\
                              + sum(count.values(name) for count in self.get(cross='ij'))
+        dcounts = self._data.pop('counts')
+        self._data['normalized_counts'] = dcounts / self._data['norm']
+
         for iaxis, axis in enumerate(self._coords_names):
             reduce_axis = tuple(iax for iax in range(len(self._coords_names)) if iax != iaxis)
             self._data[axis] = sum(_nan_to_zero(count.coords(axis)) * count.values('counts').sum(axis=reduce_axis) for count in self.get(cross='ii')) \
                              + sum(_nan_to_zero(count.coords(axis)) * count.values('counts').sum(axis=reduce_axis) for count in self.get(cross='ij'))
             with np.errstate(divide='ignore', invalid='ignore'):
-                self._data[axis] /= self._data['counts'].sum(axis=reduce_axis)
+                self._data[axis] /= dcounts.sum(axis=reduce_axis)
         for name in ['size1', 'size2']:
             if name in self._leaves[0]._meta:
                 self._meta[name] = sum(count._meta[name] for count in self.get(cross='ii'))
@@ -210,18 +259,19 @@ class Count2Jackknife(LeafLikeObservableTree):
         for name in ['counts', 'norm']:
             counts._data[name] = self.values(name) - self.get(realization=ii, cross='ii').values(name)\
                                  - alpha * (self.get(realization=ii, cross='ij').values(name) + self.get(realization=ii, cross='ji').values(name))
-
+        dcounts = counts._data.pop('counts')
+        counts._data['normalized_counts'] = dcounts / counts._data['norm']
         for iaxis, axis in enumerate(self._coords_names):
             reduce_axis = tuple(iax for iax in range(len(self._coords_names)) if iax != iaxis)
-            counts._data[axis] = _nan_to_zero(self.coords(axis=axis)) * self.values('counts')\
+            counts._data[axis] = _nan_to_zero(self.coords(axis=axis)) * self.values('counts') \
                                 - _nan_to_zero(self.get(realization=ii, cross='ii').coords(axis)) * self.get(realization=ii, cross='ii').values('counts').sum(axis=reduce_axis)\
                                 - alpha * (_nan_to_zero(self.get(realization=ii, cross='ij').coords(axis)) * self.get(realization=ii, cross='ij').values('counts').sum(axis=reduce_axis)\
                                          + _nan_to_zero(self.get(realization=ii, cross='ji').coords(axis)) * self.get(realization=ii, cross='ji').values('counts').sum(axis=reduce_axis))
             with np.errstate(divide='ignore', invalid='ignore'):
-                counts._data[axis] /= counts._data['counts'].sum(axis=reduce_axis)
+                counts._data[axis] /= dcounts.sum(axis=reduce_axis)
                 # The above may lead to rounding errors
                 # such that seps may be non-zero even if wcounts is zero.
-                mask = counts._data['counts'] != 0  # if ncounts / wcounts computed, good indicator of whether pairs exist or not
+                mask = dcounts != 0  # if ncounts / wcounts computed, good indicator of whether pairs exist or not
                 # For more robustness we restrict to those separations which lie in between the lower and upper edges
                 mask &= (counts._data[axis] >= self.edges(axis=axis)[..., 0]) & (counts._data[axis] <= self.edges(axis=axis)[..., 1])
                 counts._data[axis][~mask] = np.nan
@@ -411,13 +461,13 @@ def _project_to_poles(estimator, ells=(0, 2, 4), return_cov=None, ignore_nan=Fal
     ells = list(ells)
     sedges = estimator.edges('s')
     muedges = estimator.edges('mu')
-    dmu = muedges.diff(axis=-1)
+    dmu = np.diff(muedges, axis=-1)[..., 0]
     values, mask = [], []
     corr = estimator.value()
     for ell in ells:
         # \sum_{i} \xi_{i} \int_{\mu_{i}}^{\mu_{i+1}} L_{\ell}(\mu^{\prime}) d\mu^{\prime}
         poly = special.legendre(ell).integ()(muedges)
-        legendre = (2 * ell + 1) * (poly[1:] - poly[:-1])
+        legendre = (2 * ell + 1) * np.diff(poly, axis=-1)[..., 0]
         if ignore_nan or rp:
             mask = []
             value = np.empty(corr.shape[0], dtype=corr.dtype)
@@ -503,7 +553,7 @@ def _project_to_wedges(estimator, wedges=None, return_cov=None, ignore_nan=False
     sedges = estimator.edges('s')
     muedges = estimator.edges('mu')
     mumid = np.mean(muedges, axis=-1)
-    dmu = np.diff(muedges, axis=-1)
+    dmu = np.diff(muedges, axis=-1)[..., 0]
     corr = estimator.value()
     values, mask = [], []
     for wedge in wedges:
@@ -579,7 +629,7 @@ def _project_to_wp(estimator, return_cov=None, ignore_nan=False, return_mask=Fal
     """
     assert list(estimator.coords()) == ['rp', 'pi']
     piedges = estimator.edges('pi')
-    dpi = np.diff(piedges, axis=-1)
+    dpi = np.diff(piedges, axis=-1)[..., 0]
     corr = estimator.value()
     mask = []
     if ignore_nan:

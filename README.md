@@ -25,14 +25,8 @@ pip install git+https://github.com/adematti/lsstypes.git
 
 Dependencies:
 - `numpy`
+- `scipy` (optional, sparse matrices for rebinning)
 - `h5py` (optional)
 
----
-
-## TODO
-
-- [ ] rebinning
-- [ ] covariance matrix
-- [ ] window matrix
 
 ---

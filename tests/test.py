@@ -1,6 +1,7 @@
 from pathlib import Path
 import numpy as np
 
+import lsstypes as types
 from lsstypes import ObservableLeaf, ObservableTree, read, write
 from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Count2
 from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood
@@ -63,7 +64,7 @@ def test_tree():
     leaf = ObservableLeaf(spectrum=spectrum, k=k, coords=['k'], attrs=dict(los='x'))
     tree2 = ObservableTree([tree, leaf], observable=['correlation', 'spectrum'])
     assert tree2.labels(keys_only=True) == ['observable', 'keys']
-    assert tree2.labels(level=0) == [{'observable': 'correlation'}, {'observable': 'spectrum'}]
+    assert tree2.labels(level=1) == [{'observable': 'correlation'}, {'observable': 'spectrum'}]
     assert tree2.labels() == [{'observable': 'correlation', 'keys': 'DD'}, {'observable': 'correlation', 'keys': 'DR'}, {'observable': 'correlation', 'keys': 'RR'}, {'observable': 'spectrum'}]
 
     fn = test_dir / 'tree.h5'
@@ -91,6 +92,10 @@ def test_at():
         return Mesh2SpectrumPoles(poles, ells=ells)
 
     poles = get_poles()
+
+    print(poles)
+    print(poles.get(2))
+
     at = poles.at(2)
     at._hook = lambda new, transform: new
     poles2 = at.select(k=slice(0, None, 2))
@@ -98,6 +103,9 @@ def test_at():
     assert poles2.get(0).k.size == poles.get(0).k.size // 2
 
     poles2 = poles.at(2).at(k=(0.04, 0.14)).select(k=slice(0, None, 2))
+    assert len(poles2.get(2).k) < len(poles.get(2).k)
+
+    poles2 = poles.at(2).at(k=(0.1, 0.3)).select(k=slice(0, None, 2))
     assert len(poles2.get(2).k) < len(poles.get(2).k)
 
     poles2 = poles.at(2).at(k=(0.04, 0.14)).select(k=(0.1, 0.12)) #slice(0, None, 2))
@@ -121,8 +129,14 @@ def test_at():
     tree2 = at.select(mu=slice(0, None, 2))
     assert tree2.get('DD').shape[1] == tree.get('DD').shape[1] // 2
 
+    tree = ObservableTree([tree, poles], observables=['correlation', 'spectrum'])
+    tree2 = tree.at(observables='spectrum').at(0).select(k=(0., 0.1))
+    assert np.all(tree2.get(observables='spectrum', ells=0).k < 0.1)
 
-def test_matrix():
+
+def test_matrix(show=False):
+
+    test_dir = Path('_tests')
 
     def get_poles(size=40, seed=None):
         ells = [0, 2, 4]
@@ -143,10 +157,23 @@ def test_matrix():
     obs = winmat.observable.select(k=slice(0, None, 2))
     assert isinstance(obs, Mesh2SpectrumPoles)
 
+    winmat2 = types.sum([winmat, winmat])
+    assert np.allclose(winmat2.value(), winmat.value())
+    assert np.allclose(winmat2.observable.value(), winmat.observable.value())
+
     matrix2 = winmat.at.theory.select(k=slice(0, None, 2))
+    assert np.allclose(matrix2.value().sum(axis=-1), winmat.value().sum(axis=-1))
     assert matrix2.shape[1] == winmat.shape[1] // 2
+    winmat.plot(show=False)
+
+    assert winmat.dot(winmat.theory).shape == (winmat.shape[0],)
+    assert winmat.dot(winmat.theory, return_type=None).labels() == winmat.observable.labels()
 
     def test(matrix):
+        fn = test_dir / 'matrix.h5'
+        matrix.write(fn)
+        matrix = read(fn)
+
         matrix2 = matrix.at.observable.at(2).select(k=slice(0, None, 2))
         assert matrix2.shape[0] < matrix.shape[0]
         assert matrix2.observable.get(2).size == matrix.observable.get(2).size // 2
@@ -164,9 +191,20 @@ def test_matrix():
     test(winmat)
     value = rng.uniform(0., 1., size=(40 * 3, 40 * 3))
     covmat = CovarianceMatrix(value=value, observable=observable)
+    assert covmat.std().size == covmat.shape[0]
+    assert covmat.corrcoef().shape == covmat.shape
+    covmat.plot(show=show)
     test(covmat)
 
+    covmat = types.cov([get_poles(size=40, seed=seed) for seed in range(100)])
+    covmat.plot(show=show)
+
     likelihood = GaussianLikelihood(observable=observable, window=winmat, covariance=covmat)
+
+    fn = test_dir / 'likelihood.h5'
+    likelihood.write(fn)
+    likelihood = read(fn)
+
     likelihood2 = likelihood.at.observable.select(k=(0.05, 0.15))
     assert likelihood2.window.shape[0] < likelihood.window.shape[0]
 
@@ -175,6 +213,8 @@ def test_matrix():
 
     likelihood2 = likelihood.at.observable.at(2).at[...].select(k=slice(0, None, 2))
     assert likelihood2.observable.get(2).size == likelihood.observable.get(2).size // 2
+
+    chi2 = likelihood2.chi2(winmat.theory)
 
 
 def test_rebin():
@@ -191,18 +231,18 @@ def test_rebin():
         return counts
 
     counts = get_counts()
-    matrix = counts._transform(slice(1, None, 2), axis=1, full=True, weighted=False)
+    matrix = counts._transform(slice(1, None, 2), axis=1, name='normalized_counts', full=True)
     assert matrix.shape[1] == counts.size
-    tmp = matrix.dot(counts.counts.ravel())
-    matrix = counts._transform(slice(1, None, 2), axis=1, weighted=False)
-    tmp2 = np.moveaxis(np.tensordot(matrix, counts.counts, axes=(1, 1)), 0, 1).ravel()
+    tmp = matrix.dot(counts.normalized_counts.ravel())
+    matrix = counts._transform(slice(1, None, 2), axis=1, name='normalized_counts')
+    tmp2 = np.moveaxis(np.tensordot(matrix, counts.normalized_counts, axes=(1, 1)), 0, 1).ravel()
     assert np.allclose(tmp, tmp2)
     counts2 = counts.select(s=slice(0, None, 2))
     assert counts2.shape[0] == counts.shape[0] // 2
-    assert np.allclose(np.mean(counts2.counts), 2 * np.mean(counts.counts))
+    assert np.allclose(np.mean(counts2.normalized_counts), 2 * np.mean(counts.normalized_counts))
     counts3 = counts2.select(mu=slice(0, None, 2))
     assert counts3.shape[1] == counts.shape[1] // 2
-    assert np.allclose(np.mean(counts3.counts), 2 * np.mean(counts2.counts))
+    assert np.allclose(np.mean(counts3.normalized_counts), 2 * np.mean(counts2.normalized_counts))
 
 
 def test_types(show=False):
@@ -223,6 +263,12 @@ def test_types(show=False):
     poles = get_poles()
     poles.plot(show=show)
     poles2 = poles.select(k=slice(0, None, 2))
+
+    poles = types.sum([get_poles(seed=seed) for seed in range(2)])
+    assert np.allclose(poles.get(0).norm, 2)
+    poles = types.mean([get_poles(seed=seed) for seed in range(2)])
+    poles2 = types.join([get_poles().get(ells=[0, 2]), get_poles().get(ells=[4])])
+    assert poles2.labels() == [{'ells': 0}, {'ells': 2}, {'ells': 4}]
 
     fn = test_dir / 'spectrum.txt'
     poles.write(fn)
@@ -261,6 +307,8 @@ def test_external():
 
     from lsstypes.external import from_pypower, from_pycorr
 
+    test_dir = Path('_tests')
+
     def generate_catalogs(size=100000, boxsize=(500,) * 3, offset=(1000., 0., 0), seed=42):
         rng = np.random.RandomState(seed=seed)
         positions = np.column_stack([o + rng.uniform(0., 1., size) * b for o, b in zip(offset, boxsize)])
@@ -289,9 +337,10 @@ def test_external():
         from pycorr import TwoPointCorrelationFunction
         data_positions1, data_weights1 = generate_catalogs(seed=42)
         randoms_positions1, randoms_weights1 = generate_catalogs(seed=43)
-        data_samples1 = np.rint(data_weights1 * 10).astype(int)
-        randoms_samples1 = np.rint(randoms_weights1 * 10).astype(int)
+        data_samples1 = np.rint(data_weights1 * 7).astype(int)
+        randoms_samples1 = np.rint(randoms_weights1 * 7).astype(int)
         edges = (np.linspace(0., 101, 51), np.linspace(-1., 1., 101))
+        #edges = (np.linspace(0., 101, 21), np.linspace(-1., 1., 11))
         return TwoPointCorrelationFunction('smu', edges, data_positions1=data_positions1, data_weights1=data_weights1, data_samples1=data_samples1,
                                             randoms_positions1=randoms_positions1, randoms_weights1=randoms_weights1, randoms_samples1=randoms_samples1,
                                             engine='corrfunc', position_type='pos', nthreads=4)
@@ -299,6 +348,9 @@ def test_external():
     pypoles = generate_pypower()
     poles = from_pypower(pypoles)
     assert np.allclose(poles.value(), pypoles.power.ravel())
+    fn = test_dir / 'poles.h5'
+    poles.write(fn)
+    poles = read(fn)
     poles = poles.select(k=slice(0, None, 2))
     pypoles = pypoles[:(pypoles.shape[0] // 2) * 2:2]
     assert np.allclose(poles.get(0).coords('k'), pypoles.k, equal_nan=True)
@@ -306,21 +358,31 @@ def test_external():
 
     pycorr = generate_pycorr()
     corr = from_pycorr(pycorr)
+    fn = test_dir / 'corr.h5'
+    corr.write(fn)
+    corr = read(fn)
     assert np.allclose(corr.coords(axis='s'), pycorr.sepavg(axis=0), equal_nan=True)
     assert np.allclose(corr.value(), pycorr.corr, equal_nan=True)
     corr = corr.select(s=slice(0, None, 2))
     pycorr = pycorr[:(pycorr.shape[0] // 2) * 2:2]
     assert np.allclose(corr.coords(axis='s'), pycorr.sepavg(axis=0), equal_nan=True)
     assert np.allclose(corr.value(), pycorr.corr, equal_nan=True)
+    xi = corr.project(ells=[0, 2, 4])
+    assert np.allclose(xi.value(), np.ravel(pycorr(ells=[0, 2, 4])))
 
     pycorr = generate_pycorr_jackknife()
     corr = from_pycorr(pycorr)
+    fn = test_dir / 'corr.h5'
+    corr.write(fn)
+    corr = read(fn)
     assert np.allclose(corr.coords(axis='s'), pycorr.sepavg(axis=0), equal_nan=True)
     assert np.allclose(corr.value(), pycorr.corr, equal_nan=True)
     corr = corr.select(s=slice(0, None, 2))
     pycorr = pycorr[:(pycorr.shape[0] // 2) * 2:2]
     assert np.allclose(corr.coords(axis='s'), pycorr.sepavg(axis=0), equal_nan=True)
     assert np.allclose(corr.value(), pycorr.corr, equal_nan=True)
+    xi = corr.project(ells=[0, 2, 4])
+    assert np.allclose(xi.value(), np.ravel(pycorr(ells=[0, 2, 4], return_std=False)))
 
 
 if __name__ == '__main__':
@@ -329,6 +391,6 @@ if __name__ == '__main__':
     test_types()
     #test_sparse()
     test_rebin()
-    test_external()
     test_at()
     test_matrix()
+    test_external()
