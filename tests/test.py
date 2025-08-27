@@ -3,7 +3,7 @@ import numpy as np
 
 import lsstypes as types
 from lsstypes import ObservableLeaf, ObservableTree, read, write
-from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Count2
+from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Count2, Count2Correlation
 from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood
 
 
@@ -138,19 +138,19 @@ def test_matrix(show=False):
 
     test_dir = Path('_tests')
 
-    def get_poles(size=40, seed=None):
+    def get_spectrum(size=40, seed=None):
         ells = [0, 2, 4]
         rng = np.random.RandomState(seed=seed)
-        poles = []
+        spectrum = []
         for ell in ells:
             k_edges = np.linspace(0., 0.2, size + 1)
             k_edges = np.column_stack([k_edges[:-1], k_edges[1:]])
             k = np.mean(k_edges, axis=-1)
-            poles.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
-        return Mesh2SpectrumPoles(poles, ells=ells)
+            spectrum.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
+        return Mesh2SpectrumPoles(spectrum, ells=ells)
 
-    observable = get_poles(size=40)
-    theory = get_poles(size=60)
+    observable = get_spectrum(size=40)
+    theory = get_spectrum(size=60)
     rng = np.random.RandomState(seed=None)
     value = rng.uniform(0., 1., size=(40 * 3, 60 * 3))
     winmat = WindowMatrix(value=value, observable=observable, theory=theory)
@@ -196,7 +196,7 @@ def test_matrix(show=False):
     covmat.plot(show=show)
     test(covmat)
 
-    covmat = types.cov([get_poles(size=40, seed=seed) for seed in range(100)])
+    covmat = types.cov([get_spectrum(size=40, seed=seed) for seed in range(100)])
     covmat.plot(show=show)
 
     likelihood = GaussianLikelihood(observable=observable, window=winmat, covariance=covmat)
@@ -249,43 +249,65 @@ def test_types(show=False):
 
     test_dir = Path('_tests')
 
-    def get_poles(seed=None):
+    def get_spectrum(seed=42):
         ells = [0, 2, 4]
         rng = np.random.RandomState(seed=seed)
-        poles = []
+        spectrum = []
         for ell in ells:
             k_edges = np.linspace(0., 0.2, 41)
             k_edges = np.column_stack([k_edges[:-1], k_edges[1:]])
             k = np.mean(k_edges, axis=-1)
-            poles.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
-        return Mesh2SpectrumPoles(poles, ells=ells)
+            spectrum.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
+        return Mesh2SpectrumPoles(spectrum, ells=ells)
 
-    poles = get_poles()
-    poles.plot(show=show)
-    poles2 = poles.select(k=slice(0, None, 2))
+    def get_correlation(seed=42):
+        s_edges = np.linspace(0., 200., 51)
+        mu_edges = np.linspace(-1., 1., 101)
+        s_edges = np.column_stack([s_edges[:-1], s_edges[1:]])
+        mu_edges = np.column_stack([mu_edges[:-1], mu_edges[1:]])
+        s, mu = np.mean(s_edges, axis=-1), np.mean(mu_edges, axis=-1)
 
-    poles = types.sum([get_poles(seed=seed) for seed in range(2)])
-    assert np.allclose(poles.get(0).norm, 2)
-    poles = types.mean([get_poles(seed=seed) for seed in range(2)])
-    poles2 = types.join([get_poles().get(ells=[0, 2]), get_poles().get(ells=[4])])
-    assert poles2.labels() == [{'ells': 0}, {'ells': 2}, {'ells': 4}]
+        def get_counts(seed=42):
+            rng = np.random.RandomState(seed=seed)
+            counts = 1. + rng.uniform(size=(s.size, mu.size))
+            return Count2(counts=counts, norm=np.ones_like(counts), s=s, mu=mu, s_edges=s_edges, mu_edges=mu_edges, coords=['s', 'mu'], attrs=dict(los='x'))
+
+        counts = {label: get_counts(seed=seed + i) for i, label in enumerate(['DD', 'DR', 'RD', 'RR'])}
+        return Count2Correlation(**counts)
+
+    spectrum = get_spectrum()
+    spectrum.plot(show=show)
+    spectrum2 = spectrum.select(k=slice(0, None, 2))
+
+    spectrum = types.sum([get_spectrum(seed=seed) for seed in range(2)])
+    assert np.allclose(spectrum.get(0).norm, 2)
+    spectrum = types.mean([get_spectrum(seed=seed) for seed in range(2)])
+    spectrum2 = types.join([get_spectrum().get(ells=[0, 2]), get_spectrum().get(ells=[4])])
+    assert spectrum2.labels() == [{'ells': 0}, {'ells': 2}, {'ells': 4}]
 
     fn = test_dir / 'spectrum.txt'
-    poles.write(fn)
-    poles2 = read(fn)
-    assert poles2 == poles
+    spectrum.write(fn)
+    spectrum2 = read(fn)
+    assert spectrum2 == spectrum
 
-    all_poles, all_labels = [], []
+    all_spectrum, all_labels = [], []
     z = [0.2, 0.4, 0.6]
     for iz, zz in enumerate(z):
-        poles = get_poles()
-        poles.attrs['zeff'] = zz
-        all_poles.append(poles)
+        spectrum = get_spectrum()
+        spectrum.attrs['zeff'] = zz
+        all_spectrum.append(spectrum)
         all_labels.append(f'z{iz:d}')
-    all_poles = ObservableTree(all_poles, z=all_labels)
-    all_poles.write(fn)
-    all_poles = read(fn)
-    all_poles.get('z0').plot(show=show)
+    all_spectrum = ObservableTree(all_spectrum, z=all_labels)
+    all_spectrum.write(fn)
+    all_spectrum = read(fn)
+    all_spectrum.get('z0').plot(show=show)
+
+    correlation = get_correlation()
+    correlation2 = correlation.select(s=slice(0, None, 2))
+    correlation3 = correlation2.at(s=(20., 100.)).select(s=slice(0, None, 2))
+    #print(correlation3.edges('s'))
+    assert correlation2.shape[0] < correlation.shape[0]
+    assert correlation3.shape[0] < correlation2.shape[0]
 
 
 def test_sparse():

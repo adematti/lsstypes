@@ -962,16 +962,12 @@ class _ObservableLeafUpdateHelper(object):
         self._hook = hook
 
     def __getitem__(self, masks):
-        indices = _format_masks(self._observable.shape, masks)
-        return _ObservableLeafUpdateRef(self._observable, indices, self._hook)
+        select = ('__getitem__', masks)
+        return _ObservableLeafUpdateRef(self._observable, select, self._hook)
 
-    def __call__(self, center='mid_if_edges', **limits):
-        indices = []
-        for axis in self._observable._coords_names:
-            transform = self._observable._transform(limits.pop(axis, None), axis=axis, center=center)
-            assert transform.ndim == 1, 'Only limits (min, max) are supported'
-            indices.append(transform)
-        return _ObservableLeafUpdateRef(self._observable, indices, self._hook)
+    def __call__(self, **kwargs):
+        select = ('__select__', kwargs)
+        return _ObservableLeafUpdateRef(self._observable, select, self._hook)
 
 
 def _pad_transform(transform, start, size=None):
@@ -1059,11 +1055,22 @@ def _concatenate_transforms(transforms, starts, size):
 
 class _ObservableLeafUpdateRef(object):
 
-    def __init__(self, observable, indices=None, hook=None):
+    def __init__(self, observable, select=None, hook=None):
         self._observable = observable
-        if indices is None:
+        if select is None:
             self._limits = tuple((0, s) for s in self._observable.shape)
         else:
+            if select[0] == '__getitem__':
+                indices = _format_masks(self._observable.shape, select[1])
+            else:
+                kwargs = dict(select[1])
+                center = kwargs.pop('center', 'mid_if_edges')
+                limits = kwargs
+                indices = []
+                for axis in self._observable._coords_names:
+                    transform = self._observable._transform(limits.pop(axis, None), axis=axis, center=center)
+                    assert transform.ndim == 1, 'Only limits (min, max) are supported'
+                    indices.append(transform)
             self._limits = tuple(find_single_true_slab_bounds(index) for index in indices)
         self._hook = hook
         assert len(self._limits) == self._observable.ndim
@@ -1710,9 +1717,6 @@ class _ObservableTreeUpdateHelper(object):
         labels = _format_input_labels(self._tree, *args, **labels)
         indices = self._tree._index_labels(labels)
         assert len(indices), f'Nothing found with {labels}'
-        if len(indices) == 1 and _get_leaf(self._tree, indices[0])._is_leaf:
-            # Single leaf
-            return _ObservableTreeUpdateSingleRef(self._tree, indices[0], hook=self._hook)
         # Sub-tree
         return _ObservableTreeUpdateRef(self._tree, indices, hook=self._hook)
 
@@ -1740,89 +1744,11 @@ def _replace_in_tree(tree, index, sub):
     return start, stop
 
 
-class _ObservableTreeUpdateSingleRef(object):
-
-    _tree: ObservableTree
-    _index: tuple
-
-    def __init__(self, tree, index, hook=None):
-        self._tree = tree
-        self._index = index
-        self._hook = hook
-
-    # Super easy, just duplicates
-
-    def __getitem__(self, masks):
-        """Select a section of the observable."""
-        hook = None
-        if self._hook:
-            def hook(leaf, transform): return leaf, transform
-            hook.weight = getattr(self._hook, 'weight', None)
-        leaf = _get_leaf(self._tree, self._index)
-        leaf =  _get_update_ref(leaf)(leaf, hook=hook).__getitem__(masks)
-        if self._hook:
-            leaf, transform = leaf
-        new = self._tree.copy()
-        start, stop = _replace_in_tree(new, self._index, leaf)
-        if self._hook:
-            return self._hook(new, transform=_pad_transform(transform, start, size=self._tree.size))
-        return new
-
-    def select(self, **limits):
-        """Select a range in one or more coordinates."""
-        hook = None
-        if self._hook:
-            def hook(leaf, transform): return leaf, transform
-            hook.weight = getattr(self._hook, 'weight', None)
-        leaf = _get_leaf(self._tree, self._index)
-        leaf = _get_update_ref(leaf)(leaf, hook=hook).select(**limits)
-        if self._hook:
-            leaf, transform = leaf
-        new = self._tree.copy()
-        start, stop = _replace_in_tree(new, self._index, leaf)
-        if self._hook:
-            return self._hook(new, transform=_pad_transform(transform, start, size=self._tree.size))
-        return new
-
-    def match(self, observable):
-        """Match coordinates to those of input leaf."""
-        hook = None
-        if self._hook:
-            def hook(leaf, transform): return leaf, transform
-            hook.weight = getattr(self._hook, 'weight', None)
-        leaf = _get_leaf(self._tree, self._index)
-        leaf = _get_update_ref(leaf)(leaf, hook=hook).match(observable)
-        if self._hook:
-            leaf, transform = leaf
-        new = self._tree.copy()
-        start, stop = _replace_in_tree(new, self._index, leaf)
-        if self._hook:
-            return self._hook(new, transform=_pad_transform(transform, start, size=self._tree.size))
-        return new
-
-    @property
-    def at(self):
-        """Helper to select or slice the leaf in-place."""
-        at = _get_leaf(self._tree, self._index).at
-
-        def hook(leaf, transform=None):
-            new = self._tree.copy()
-            start, stop = _replace_in_tree(new, self._index, leaf)
-            if self._hook is not None:
-                return self._hook(new, transform=_pad_transform(transform, start, size=self._tree.size))
-            return new
-
-        if self._hook is not None:
-            hook.weight = getattr(self._hook, 'weight', None)
-
-        at._hook = hook
-        return at
-
-
 class _ObservableTreeUpdateRef(object):
 
-    def __init__(self, tree, indices=None, hook=None):
+    def __init__(self, tree, indices=None, select=None, hook=None):
         self._tree = tree
+        self._select = select
         self._indices = indices
         self._hook = hook
 
@@ -1850,6 +1776,30 @@ class _ObservableTreeUpdateRef(object):
             return self._hook(new, transform=np.flatnonzero(mask))
         return new
 
+    def __getitem__(self, masks):
+        """Select a section of the tree."""
+        hook = None
+        if self._hook:
+            def hook(leaf, transform): return leaf, transform
+            hook.weight = getattr(self._hook, 'weight', None)
+        new = self.copy()
+        transform = None
+        for index in (self._indices if self._indices is not None else self._tree._index_labels({})):
+            leaf = _get_leaf(self._tree, index)
+            leaf = _get_update_ref(leaf)(leaf, select=self._select, hook=hook).__getitem__(masks)
+            size = new.size
+            if self._hook:
+                leaf, _transform = leaf
+            size = new.size
+            start, stop = _replace_in_tree(new, index, leaf)
+            if self._hook:
+                _transform = _pad_transform(_transform, start, size=size)
+                transform = _join_transform(transform, _transform, size=size)
+
+        if self._hook:
+            return self._hook(new, transform=transform)
+        return new
+
     def select(self, **limits):
         """Select a range in one or more coordinates."""
         hook = None
@@ -1861,7 +1811,7 @@ class _ObservableTreeUpdateRef(object):
         transform = None
         for index in (self._indices if self._indices is not None else self._tree._index_labels({})):
             leaf = _get_leaf(self._tree, index)
-            leaf =  _get_update_ref(leaf)(leaf, hook=hook).select(**limits)
+            leaf = _get_update_ref(leaf)(leaf, select=self._select, hook=hook).select(**limits)
             if self._hook:
                 leaf, _transform = leaf
             size = new.size
@@ -1894,7 +1844,7 @@ class _ObservableTreeUpdateRef(object):
             assert len(_ileaf) == 1 and len(_ileaf[0]) == 1
             _ileaf = _ileaf[0][0]
             _leaf = tree._leaves[_ileaf]
-            leaf = _get_update_ref(_leaf)(_leaf, hook=hook).match(leaf)
+            leaf = _get_update_ref(_leaf)(_leaf, select=self._select, hook=hook).match(leaf)
             if self._hook:
                 leaf, _transform = leaf
             leaves.append(leaf)
@@ -1943,6 +1893,7 @@ class _ObservableTreeUpdateRef(object):
         if self._hook is not None:
             hook.weight = getattr(self._hook, 'weight', None)
         at._hook = hook
+        at._select = self._select
         return at
 
 
@@ -2015,44 +1966,26 @@ class _LeafLikeObservableTreeHelper(object):
 
     def __getitem__(self, masks):
         """Select a section of the observable."""
-        indices = _format_masks(self._tree.shape, masks)
-        return _LeafLikeObservableTreeUpdateRef(self._tree, indices, self._hook)
+        select = ('__getitem__', masks)
+        return _LeafLikeObservableTreeUpdateRef(self._tree, select, self._hook)
 
-    def __call__(self, center='mid_if_edges', **limits):
+    def __call__(self, **kwargs):
         """Select a range in one or more coordinates."""
-        indices = []
-        for axis in self._tree._coords_names:
-            transform = self._tree._transform(limits.pop(axis, None), axis=axis, center=center)
-            assert transform.ndim == 1, 'Only limits (min, max) are supported'
-            indices.append(transform)
-        return _LeafLikeObservableTreeUpdateRef(self._tree, indices, self._hook)
+        select = ('__select__', kwargs)
+        return _LeafLikeObservableTreeUpdateRef(self._tree, select, self._hook)
 
 
 class _LeafLikeObservableTreeUpdateRef(object):
 
-    def __init__(self, tree, hook=None):
+    def __init__(self, tree, select, hook=None):
         self._tree = tree
+        self._select = select
         self._hook = hook
 
     def __getitem__(self, masks):
         """Select a section of the observable."""
-        hook = None
-        if self._hook:
-            def hook(leaf, transform): return leaf, transform
-            hook.weight = getattr(self._hook, 'weight', None)
-        new = self.copy()
-        transform = None
-        for ileaf, leaf in enumerate(self._tree.leaves):
-            leaf = _get_update_ref(leaf)(leaf, hook=hook).__getitem__(masks)
-            size = new.size
-            start, stop = _replace_in_tree(new, (ileaf,), leaf)
-            if self._hook:
-                leaf, _transform = leaf
-                transform = _join_transform(transform, _transform, size=size)
-
-        if self._hook:
-            return self._hook(new, transform=transform)
-        return new
+        self._indices = None
+        return _ObservableTreeUpdateRef.__getitem__(self, masks)
 
     def select(self, **limits):
         """Select a range in one or more coordinates."""
@@ -2063,12 +1996,6 @@ class _LeafLikeObservableTreeUpdateRef(object):
         """Match coordinates to those of input observable."""
         self._indices = None
         return _ObservableTreeUpdateRef.match(self, observable)
-
-    @property
-    def at(self):
-        """Helper to select or slice the observable in-place."""
-        self._indices = None
-        return _ObservableTreeUpdateRef.at(self)
 
 
 class _WindowMatrixUpdateHelper(object):
