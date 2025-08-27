@@ -1,4 +1,6 @@
-**lsstypes**: Structured data types designed for large-scale structure (LSS) measurements, with built-in support for coordinate selection, rebinning, and flexible file formats.
+## lsstypes
+
+Structured data types designed for large-scale structure (LSS) measurements, with built-in support for coordinate selection, rebinning, and flexible file formats.
 
 ---
 
@@ -77,3 +79,12 @@ rebinned.write('rebinned.hdf5')
 ```
 
 See the `nb/` directory for interactive examples using Jupyter notebooks.
+
+
+## Predefined types
+
+- Mesh2SpectrumPoles: power spectrum multipoles
+- Count2: pair counts
+- Count2Correlation: correlation function from pair counts
+- Count2Jackknife: Jackknife pair counts
+- Count2JackknifeCorrelation: correlation function from jackknife pair counts

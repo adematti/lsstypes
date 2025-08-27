@@ -451,9 +451,6 @@ def test_readme():
 
 if __name__ == '__main__':
 
-    test_readme()
-    exit()
-
     test_tree()
     test_types()
     #test_sparse()
@@ -461,3 +458,4 @@ if __name__ == '__main__':
     test_at()
     test_matrix()
     test_external()
+    test_readme()
