@@ -27,8 +27,8 @@ def from_pypower(power):
         poles.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=num_raw,
                                        num_shotnoise=power.shotnoise_nonorm * ones * (ell == 0),
                                        norm=power.wnorm * ones,
-                                       nmodes=power.nmodes))
-    return Mesh2SpectrumPoles(poles, ells=list(ells))
+                                       nmodes=power.nmodes, ell=ell))
+    return Mesh2SpectrumPoles(poles)
 
 
 def from_pycorr(correlation):

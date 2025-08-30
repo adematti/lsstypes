@@ -600,11 +600,13 @@ class ObservableLeaf(object):
                 return index, self.edges(axis=axis)
             return index
 
+        undefined_weight = False
         if isinstance(name, tuple):
             weight, normalized = name
         else:
             bw = getattr(self, '_binweight', None)
             if bw is None:
+                undefined_weight = True
                 weight, normalized = False, True
             else:
                 weight, normalized = bw(name=name)
@@ -721,6 +723,11 @@ class ObservableLeaf(object):
             if hasattr(m, 'multiply'):  # scipy sparse
                 return m.multiply(a)
             return m * a
+
+        if undefined_weight:
+            if mask.sum(axis=-1).max() > 1:
+                import warnings
+                warnings.warn('Non-trivial rebinning requires a _binweight function to be defined')
 
         if weight is not False:
             if len(shape) > 1:
@@ -1319,23 +1326,21 @@ class ObservableTree(object):
                 raise ValueError(f'Label {labels} is duplicated')
             uniques.append(labels)
 
-    @classmethod
-    def _label_to_str(cls, label):
+    def _label_to_str(self, label):
         import numbers
         if isinstance(label, numbers.Number):
             return str(label)
         if isinstance(label, str):
-            for char in ['_', cls._sep_strlabels]:
+            for char in ['_', self._sep_strlabels]:
                 if char in label:
                     raise ValueError(f'Label cannot contain "{char}"')
             return label
         if isinstance(label, tuple):
             if len(label) == 1: raise ValueError('Tuples must be of length > 1')
-            return '_'.join([cls._label_to_str(lbl) for lbl in label])
+            return '_'.join([self._label_to_str(lbl) for lbl in label])
         raise NotImplementedError(f'Unable to safely cast {label} to string. Implement "_label_to_str" and "_str_to_label".')
 
-    @classmethod
-    def _str_to_label(cls, str, squeeze=True):
+    def _str_to_label(self, str, squeeze=True):
         splits = list(str.split('_'))
         for i, split in enumerate(splits):
             try:
@@ -1345,6 +1350,10 @@ class ObservableTree(object):
         if squeeze and len(splits) == 1:
             return splits[0]
         return tuple(splits)
+
+    def _eq_label(self, label1, label2):
+        # Compare input label label2 to self label1
+        return label1 == label2
 
     def __repr__(self):
         return f'{self.__class__.__name__}(labels={self.labels(level=1)}, size={self.size})'
@@ -1407,7 +1416,7 @@ class ObservableTree(object):
                 return sum((find(vs, k) for vs in vselect), start=[])
             if isinstance(vselect, str):
                 return [i for i, v in enumerate(self._strlabels[k]) if v == vselect]
-            return [i for i, v in enumerate(self._labels[k]) if v == vselect]
+            return [i for i, v in enumerate(self._labels[k]) if self._eq_label(v, vselect)]
 
         self_index = list(range(len(self._leaves)))
         # First find labels in current level, keeping original order
@@ -1932,7 +1941,6 @@ class LeafLikeObservableTree(ObservableTree):
         return self._leaves[0].coords(*args, **kwargs)
 
     def __getitem__(self, masks):
-
         indices = _format_masks(self.shape, masks)
         new = self.copy()
         for ileaf, leaf in new._leaves:
@@ -1947,6 +1955,25 @@ class LeafLikeObservableTree(ObservableTree):
     def value(self):
         """Main value of the observable."""
         raise NotImplementedError
+
+    @classmethod
+    def _average(cls, observables, weights=None):
+        # Average multiple observables
+        new = observables[0].copy()
+        for ileaf, leaf in enumerate(new._leaves):
+            labels = {k: v[ileaf] for k, v in new._labels.items()}
+            new._leaves[ileaf] = leaf._average([observable.get(**labels) for observable in observables], weights=weights)
+        return new
+
+    @classmethod
+    def sum(cls, observables):
+        """Sum multiple observables."""
+        return cls._average(observables, weights=getattr(cls, '_sumweight', None))
+
+    @classmethod
+    def mean(cls, observables):
+        """Mean of multiple observables."""
+        return cls._average(observables, weights=getattr(cls, '_meanweight', None))
 
 
 def _get_update_ref(observable):
@@ -2453,12 +2480,12 @@ class CovarianceMatrix(object):
             if observable._is_leaf:
                 x.append(get_x(observable))
                 indices.append(np.arange(observable.size))
-
-            for label in observable.labels(level=level):
-                leaf = observable.get(**label)
-                x.append(get_x(leaf))
-                start, stop = _get_range_in_tree(observable, observable._index_labels(label)[0])
-                indices.append(np.arange(start, stop))
+            else:
+                for label in observable.labels(level=level):
+                    leaf = observable.get(**label)
+                    x.append(get_x(leaf))
+                    start, stop = _get_range_in_tree(observable, observable._index_labels(label)[0])
+                    indices.append(np.arange(start, stop))
 
             return xlabels, labels, x, indices
 

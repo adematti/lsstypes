@@ -1,9 +1,12 @@
+import os
+from contextlib import contextmanager
 from pathlib import Path
+
 import numpy as np
 
 import lsstypes as types
 from lsstypes import ObservableLeaf, ObservableTree, read, write
-from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Count2, Count2Correlation
+from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
 from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood
 
 
@@ -260,20 +263,36 @@ def test_types(show=False):
             spectrum.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
         return Mesh2SpectrumPoles(spectrum, ells=ells)
 
-    def get_correlation(seed=42):
-        s_edges = np.linspace(0., 200., 51)
-        mu_edges = np.linspace(-1., 1., 101)
-        s_edges = np.column_stack([s_edges[:-1], s_edges[1:]])
-        mu_edges = np.column_stack([mu_edges[:-1], mu_edges[1:]])
-        s, mu = np.mean(s_edges, axis=-1), np.mean(mu_edges, axis=-1)
+    def get_count(mode='smu', seed=42):
+        rng = np.random.RandomState(seed=seed)
+        if mode == 'smu':
+            coords = ['s', 'mu']
+            edges = [np.linspace(0., 200., 51), np.linspace(-1., 1., 101)]
+        if mode == 'rppi':
+            coords = ['rp', 'pi']
+            edges = [np.linspace(0., 200., 51), np.linspace(-20., 20., 101)]
 
-        def get_counts(seed=42):
-            rng = np.random.RandomState(seed=seed)
-            counts = 1. + rng.uniform(size=(s.size, mu.size))
-            return Count2(counts=counts, norm=np.ones_like(counts), s=s, mu=mu, s_edges=s_edges, mu_edges=mu_edges, coords=['s', 'mu'], attrs=dict(los='x'))
+        edges = [np.column_stack([edge[:-1], edge[1:]]) for edge in edges]
+        coords_values = [np.mean(edge, axis=-1) for edge in edges]
 
-        counts = {label: get_counts(seed=seed + i) for i, label in enumerate(['DD', 'DR', 'RD', 'RR'])}
+        counts = 1. + rng.uniform(size=tuple(v.size for v in coords_values))
+        return Count2(counts=counts, norm=np.ones_like(counts), **{coord: value for coord, value in zip(coords, coords_values)},
+                      **{f'{coord}_edges': value for coord, value in zip(coords, edges)}, coords=coords, attrs=dict(los='x'))
+
+    def get_correlation(mode='smu', seed=42):
+        counts = {label: get_count(mode=mode, seed=seed + i) for i, label in enumerate(['DD', 'DR', 'RD', 'RR'])}
         return Count2Correlation(**counts)
+
+    def get_correlation_jackknife(mode='smu', seed=42):
+        def get_count_jk(seed=42):
+            realizations = list(range(24))
+            ii_counts = {ireal: get_count(mode=mode, seed=seed + ireal) for ireal in realizations}
+            ij_counts = {ireal: get_count(mode=mode, seed=seed + ireal + 1) for ireal in realizations}
+            ji_counts = {ireal: get_count(mode=mode, seed=seed + ireal + 2) for ireal in realizations}
+            return Count2Jackknife(ii_counts, ij_counts, ji_counts)
+
+        counts = {label: get_count_jk(seed=seed + i) for i, label in enumerate(['DD', 'DR', 'RD', 'RR'])}
+        return Count2JackknifeCorrelation(**counts)
 
     spectrum = get_spectrum()
     spectrum.plot(show=show)
@@ -308,6 +327,29 @@ def test_types(show=False):
     #print(correlation3.edges('s'))
     assert correlation2.shape[0] < correlation.shape[0]
     assert correlation3.shape[0] < correlation2.shape[0]
+    value, window = correlation.project(ells=[0, 2, 4], kw_window=dict())
+    value.plot(show=show)
+    window.plot(show=show)
+
+    value = correlation.project(wedges=[(-1., -2. / 3.), (1. / 2., 2. / 3.)])
+    value.plot(show=show)
+    assert value.get((-1., -2. / 3.)) == value.get('w1')
+    assert value.get((1. / 2., 2. / 3.)) == value.get('w2')
+
+    correlation = get_correlation_jackknife(mode='smu')
+    value, covariance, window = correlation.project(ells=[0, 2, 4], kw_covariance=dict(), kw_window=dict())
+    value.plot(show=show)
+    covariance.plot(show=show)
+    window.plot(show=show)
+
+    value, covariance = correlation.project(wedges=[(-1., -2. / 3.), (1. / 2., 2. / 3.)], kw_covariance=dict())
+    value.plot(show=show)
+    covariance.plot(show=show)
+
+    correlation = get_correlation_jackknife(mode='rppi')
+    value, covariance = correlation.project(kw_covariance=dict())
+    value.plot(show=show)
+    covariance.plot(show=show)
 
 
 def test_sparse():
@@ -407,9 +449,6 @@ def test_external():
     assert np.allclose(xi.value(), np.ravel(pycorr(ells=[0, 2, 4], return_std=False)))
 
 
-import os
-from contextlib import contextmanager
-
 @contextmanager
 def chdir(path):
     """Temporarily change working directory inside a context."""
@@ -475,7 +514,7 @@ if __name__ == '__main__':
 
     test_tree()
     test_types()
-    #test_sparse()
+    test_sparse()
     test_rebin()
     test_at()
     test_matrix()
