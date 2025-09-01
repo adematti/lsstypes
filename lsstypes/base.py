@@ -293,7 +293,7 @@ def register_type(cls):
     return cls
 
 
-def deep_eq(obj1, obj2, equal_nan=True, raise_error=True, label=None):
+def deep_eq(obj1, obj2, equal_nan=True, raise_error=False, label=None):
     """(Recursively) test equality between ``obj1`` and ``obj2``."""
     if raise_error:
         label_str = f' for object {label}' if label is not None else ''
@@ -1191,7 +1191,7 @@ def _iter_on_tree(f, tree, level=None):
         if level == 0 or any(t._is_leaf for t in tree):
             return [f(tree)]
         toret = []
-        for tree in zip(*[t._leaves for t in tree]):
+        for tree in zip(*[t._branches for t in tree]):
             toret += _iter_on_tree(f, list(tree), level=level - 1 if level is not None else None)
 
     else:
@@ -1199,7 +1199,7 @@ def _iter_on_tree(f, tree, level=None):
         if level == 0 or tree._is_leaf:
             return [f(tree)]
         toret = []
-        for tree in tree._leaves:
+        for tree in tree._branches:
             toret += _iter_on_tree(f, tree, level=level - 1 if level is not None else None)
 
     return toret
@@ -1223,7 +1223,7 @@ def _get_leaf(tree, index=None):
     """
     if index is None:
         return tree
-    toret = tree._leaves[index[0]]
+    toret = tree._branches[index[0]]
     if len(index) == 1:
         return toret
     return _get_leaf(toret, index[1:])
@@ -1288,41 +1288,41 @@ class ObservableTree(object):
     _sep_strlabels = '-'
     _is_leaf = False
 
-    def __init__(self, leaves, attrs=None, meta=None, **labels):
+    def __init__(self, branches, attrs=None, meta=None, **labels):
         """
         Parameters
         ----------
-        leaves : list of ObservableLeaf
-            The leaves in the collection.
+        branches : list of ObservableLeaf
+            The branches in the collection.
         labels : dict
             Label arrays (e.g. ell=[0, 2], observable=['spectrum',...]).
         """
-        self._leaves = list(leaves)
+        self._branches = list(branches)
         self._meta = dict(meta or {})
         self._attrs = dict(attrs or {})
-        leaves_labels = []
-        for leaf in self._leaves:
-            if not leaf._is_leaf:
-                leaves_labels += leaf.labels(keys_only=True)
+        branches_labels = []
+        for branch in self._branches:
+            if not branch._is_leaf:
+                branches_labels += branch.labels(keys_only=True)
         self._labels, self._strlabels = {}, {}
-        nleaves = len(leaves)
-        assert nleaves, 'At least one leaf must be provided'
+        nbranches = len(branches)
+        assert nbranches, 'At least one branch must be provided'
         assert len(labels), 'At least one label must be provided'
         for k, v in labels.items():
             if isinstance(v, list):
-                assert len(v) == nleaves, f'The length of labels must match that of leaves {nleaves:d}'
+                assert len(v) == nbranches, f'The length of labels must match that of branches {nbranches:d}'
                 self._labels[k] = v
             else:
-                self._labels[k] = [v] * nleaves
-            if k in leaves_labels:
+                self._labels[k] = [v] * nbranches
+            if k in branches_labels:
                 raise ValueError(f'Cannot use labels with same name at different levels: {k}')
             self._strlabels[k] = list(map(self._label_to_str, self._labels[k]))
             assert not any(v in self._forbidden_label_values for v in self._strlabels[k]), 'Cannot use "labels" as a label value'
             convert = list(map(self._str_to_label, self._strlabels[k]))
             assert convert == self._labels[k], f'Labels must be mappable to str; found label -> str -> label != identity:\n{convert} != {self._labels[k]}'
         uniques = []
-        for ileaf in range(nleaves):
-            labels = tuple(self._strlabels[k][ileaf] for k in self._strlabels)
+        for ibranch in range(nbranches):
+            labels = tuple(self._strlabels[k][ibranch] for k in self._strlabels)
             if labels in uniques:
                 raise ValueError(f'Label {labels} is duplicated')
             uniques.append(labels)
@@ -1385,19 +1385,19 @@ class ObservableTree(object):
         if level == 0: return toret
         if keys_only:
             toret += [label for label in self._labels if label not in toret]
-            for ileaf, leaf in enumerate(self._leaves):
-                if leaf._is_leaf:
+            for ibranch, branch in enumerate(self._branches):
+                if branch._is_leaf:
                     pass
                 else:
-                    for label in leaf.labels(level=level - 1 if level is not None else None, keys_only=keys_only, as_str=as_str):
+                    for label in branch.labels(level=level - 1 if level is not None else None, keys_only=keys_only, as_str=as_str):
                         if label not in toret: toret.append(label)
         else:
-            for ileaf, leaf in enumerate(self._leaves):
-                self_labels = {k: v[ileaf] for k, v in (self._strlabels if as_str else self._labels).items()}
-                if level == 1 or leaf._is_leaf:
+            for ibranch, branch in enumerate(self._branches):
+                self_labels = {k: v[ibranch] for k, v in (self._strlabels if as_str else self._labels).items()}
+                if level == 1 or branch._is_leaf:
                     toret.append(self_labels)
                 else:
-                    for labels in leaf.labels(level=level - 1 if level is not None else None, keys_only=keys_only, as_str=as_str):
+                    for labels in branch.labels(level=level - 1 if level is not None else None, keys_only=keys_only, as_str=as_str):
                         toret.append(self_labels | labels)
 
         return toret
@@ -1419,7 +1419,7 @@ class ObservableTree(object):
                 return [i for i, v in enumerate(self._strlabels[k]) if v == vselect]
             return [i for i, v in enumerate(self._labels[k]) if self._eq_label(v, vselect)]
 
-        self_index = list(range(len(self._leaves)))
+        self_index = list(range(len(self._branches)))
         # First find labels in current level, keeping original order
         for k in self._labels:
             if k in labels:
@@ -1429,7 +1429,7 @@ class ObservableTree(object):
         if labels:  # remaining labels
             toret = {}
             for index in self_index:
-                sub_index_labels = self._leaves[index]._index_labels(labels, flatten=False)
+                sub_index_labels = self._branches[index]._index_labels(labels, flatten=False)
                 if not sub_index_labels:
                     continue
                 toret[index] = sub_index_labels
@@ -1454,7 +1454,7 @@ class ObservableTree(object):
         Returns
         -------
         ObservableLeaf or ObservableTree
-            The matching leaf or subtree.
+            The matching subtree or leaf.
         """
         labels = _format_input_labels(self, *args, **labels)
         isscalar = not any(isinstance(v, list) for v in labels.values())
@@ -1468,24 +1468,24 @@ class ObservableTree(object):
                 return _get_leaf(self, flatten_indices[0])
 
         def get_subtree(tree, indices):
-            leaves, ileaves = [], []
-            for ileaf, leaf in enumerate(tree._leaves):
-                if ileaf in indices:
-                    if indices[ileaf] is not None:
-                        leaf = get_subtree(tree, indices[ileaf])
-                    leaves.append(leaf)
-                    ileaves.append(ileaf)
+            branches, ibranches = [], []
+            for ibranch, branch in enumerate(tree._branches):
+                if ibranch in indices:
+                    if indices[ibranch] is not None:
+                        branch = get_subtree(tree, indices[ibranch])
+                    branches.append(branch)
+                    ibranches.append(ibranch)
             new = tree.copy()
-            new._leaves = leaves
-            new._labels = {k: [v[idx] for idx in ileaves] for k, v in tree._labels.items()}
-            new._strlabels = {k: [v[idx] for idx in ileaves] for k, v in tree._strlabels.items()}
+            new._branches = branches
+            new._labels = {k: [v[idx] for idx in ibranches] for k, v in tree._labels.items()}
+            new._strlabels = {k: [v[idx] for idx in ibranches] for k, v in tree._strlabels.items()}
             return new
 
         return get_subtree(self, indices)
 
     def match(self, observable):
         """
-        Match the the tree to the input observable, recursively, matching labels and leaves.
+        Match the the tree to the input observable, recursively, matching labels and branches.
 
         Parameters
         ----------
@@ -1495,23 +1495,23 @@ class ObservableTree(object):
         Returns
         -------
         ObservableTree
-            New tree with leaves matched to input observable.
+            New tree with branches matched to input observable.
         """
-        leaves, ileaves = [], []
-        for ileaf, leaf in enumerate(observable._leaves):
-            _ileaf = self._index_labels({k: v[ileaf] for k, v in observable._labels.items()}, flatten=True)
-            assert len(_ileaf) == 1 and len(_ileaf[0]) == 1
-            _ileaf = _ileaf[0][0]
-            leaves.append(self._leaves[_ileaf].match(leaf))
-            ileaves.append(_ileaf)
+        branches, ibranches = [], []
+        for ibranch, branch in enumerate(observable._branches):
+            _ibranch = self._index_labels({k: v[ibranch] for k, v in observable._labels.items()}, flatten=True)
+            assert len(_ibranch) == 1 and len(_ibranch[0]) == 1
+            _ibranch = _ibranch[0][0]
+            branches.append(self._branches[_ibranch].match(branch))
+            ibranches.append(_ibranch)
         new = self.copy()
-        new._leaves = leaves
-        new._labels = {k: [v[idx] for idx in ileaves] for k, v in self._labels.items()}
-        new._strlabels = {k: [v[idx] for idx in ileaves] for k, v in self._strlabels.items()}
+        new._branches = branches
+        new._labels = {k: [v[idx] for idx in ibranches] for k, v in self._labels.items()}
+        new._strlabels = {k: [v[idx] for idx in ibranches] for k, v in self._strlabels.items()}
         return new
 
     def sizes(self, level=None):
-        """Size of each leaf at given level."""
+        """Size of each branch at given level."""
         return _iter_on_tree(lambda leaf: leaf.size, self, level=level)
 
     @property
@@ -1520,8 +1520,8 @@ class ObservableTree(object):
         return sum(self.sizes(level=1))
 
     def __iter__(self):
-        """Iterate over leaves."""
-        return iter(self._leaves)
+        """Iterate over branches."""
+        return iter(self._branches)
 
     def select(self, **limits):
         """
@@ -1546,20 +1546,20 @@ class ObservableTree(object):
         ObservableTree
             New tree with selected leaves.
         """
-        leaves = []
+        branches = []
         notfound = set(limits)
 
-        def get_coords(leaf):
-            return sum(_iter_on_tree(lambda leaf: tuple(leaf._coords_names), leaf, level=None), start=tuple())
+        def get_coords(branch):
+            return sum(_iter_on_tree(lambda leaf: tuple(leaf._coords_names), branch, level=None), start=tuple())
 
-        for leaf in self._leaves:
-            _all_coord_names = get_coords(leaf)
+        for branch in self._branches:
+            _all_coord_names = get_coords(branch)
             _ranges = {k: v for k, v in limits.items() if k in _all_coord_names}
             notfound -= set(_ranges)
-            leaves.append(leaf.select(**_ranges))
+            branches.append(branch.select(**_ranges))
 
         new = self.copy()
-        new._leaves = leaves
+        new._branches = branches
         return new
 
     def value(self, concatenate=True):
@@ -1575,8 +1575,8 @@ class ObservableTree(object):
         -------
         value : list or array
         """
-        def get_value(leaf):
-            return _iter_on_tree(lambda leaf: leaf.value(), leaf, level=None)
+        def get_value(branch):
+            return _iter_on_tree(lambda leaf: leaf.value(), branch, level=None)
 
         values = get_value(self)
         values = [value.ravel() for value in values]
@@ -1593,9 +1593,9 @@ class ObservableTree(object):
         if value is None:
             return new
         start = 0
-        for ileaf, leaf in enumerate(new._leaves):
-            stop = start + leaf.size
-            new._leaves[ileaf] = leaf.clone(value=value[start:stop])
+        for ibranch, branch in enumerate(new._branches):
+            stop = start + branch.size
+            new._branches[ibranch] = branch.clone(value=value[start:stop])
             start = stop
         return new
 
@@ -1614,18 +1614,18 @@ class ObservableTree(object):
     def sum(cls, observables):
         """Sum multiple observables."""
         new = observables[0].copy()
-        for ileaf, leaf in enumerate(new._leaves):
-            labels = {k: v[ileaf] for k, v in new._labels.items()}
-            new._leaves[ileaf] = leaf.sum([observable.get(**labels) for observable in observables])
+        for ibranch, branch in enumerate(new._branches):
+            labels = {k: v[ibranch] for k, v in new._labels.items()}
+            new._branches[ibranch] = branch.sum([observable.get(**labels) for observable in observables])
         return new
 
     @classmethod
     def mean(cls, observables):
         """Mean of multiple observables."""
         new = observables[0].copy()
-        for ileaf, leaf in enumerate(new._leaves):
-            labels = {k: v[ileaf] for k, v in new._labels.items()}
-            new._leaves[ileaf] = leaf.mean([observable.get(**labels) for observable in observables])
+        for ibranch, branch in enumerate(new._branches):
+            labels = {k: v[ibranch] for k, v in new._labels.items()}
+            new._branches[ibranch] = branch.mean([observable.get(**labels) for observable in observables])
         return new
 
     @classmethod
@@ -1638,15 +1638,15 @@ class ObservableTree(object):
     @classmethod
     def join(cls, observables):
         """Join multiple trees into a single one."""
-        leaves, labels = [], {label: [] for label in observables[0]._labels}
+        branches, labels = [], {label: [] for label in observables[0]._labels}
         for observable in observables:
             assert isinstance(observable, ObservableTree)
             assert set(observable._labels) == set(labels), 'All collections must have same labels'
-            leaves += observable._leaves
+            branches += observable._branches
             for k in labels:
                 labels[k] = labels[k] + observable._labels[k]
         new = observables[0].copy()
-        ObservableTree.__init__(new, leaves, **labels)  # check labels
+        ObservableTree.__init__(new, branches, **labels)  # check labels
         return new
 
     @property
@@ -1663,16 +1663,16 @@ class ObservableTree(object):
     def __getstate__(self, to_file=False):
         state = {}
         if not to_file:
-            state['leaves'] = [leaf.__getstate__() for leaf in self._leaves]
+            state['branches'] = [branch.__getstate__() for branch in self._branches]
             state['labels'] = dict(self._labels)
             state['strlabels'] = dict(self._strlabels)
         else:
             state['labels_names'] = self._sep_strlabels.join(list(self._labels.keys()))
             state['labels_values'] = []
-            for ileaf, leaf in enumerate(self._leaves):
-                label = self._sep_strlabels.join([self._strlabels[k][ileaf] for k in self._labels])
+            for ibranch, branch in enumerate(self._branches):
+                label = self._sep_strlabels.join([self._strlabels[k][ibranch] for k in self._labels])
                 state['labels_values'].append(label)
-                state[label] = leaf.__getstate__(to_file=to_file)
+                state[label] = branch.__getstate__(to_file=to_file)
         if self._meta: state['meta'] = dict(self._meta)
         if self._attrs: state['attrs'] = dict(self._attrs)
         state['name'] = self._name
@@ -1681,9 +1681,9 @@ class ObservableTree(object):
     def __setstate__(self, state):
         self._meta = state.get('meta', {})
         self._attrs = state.get('attrs', {})
-        if 'leaves' in state:
-            leaves = state['leaves']
-            self._leaves = [from_state(leaf) for leaf in leaves]
+        if 'branches' in state:
+            branches = state['branches']
+            self._branches = [from_state(branch) for branch in branches]
             self._labels = state['labels']
             self._strlabels = state['strlabels']
         else:  # h5py format
@@ -1693,11 +1693,11 @@ class ObservableTree(object):
             for i, name in enumerate(label_names):
                 self._strlabels[name] = [v[i] for v in label_values]
                 self._labels[name] = [self._str_to_label(s, squeeze=True) for s in self._strlabels[name]]
-            nleaves = len(state['labels_values'])
-            self._leaves = []
-            for ileaf in range(nleaves):
-                label = state['labels_values'][ileaf]
-                self._leaves.append(from_state(state[label]))
+            nbranches = len(state['labels_values'])
+            self._branches = []
+            for ibranch in range(nbranches):
+                label = state['labels_values'][ibranch]
+                self._branches.append(from_state(state[label]))
 
     def __eq__(self, other):
         return deep_eq(self.__getstate__(), other.__getstate__())
@@ -1732,25 +1732,25 @@ class _ObservableTreeUpdateHelper(object):
 
 
 def _get_range_in_tree(tree, index):
-    # Get start/stop in the full tree for a given index (leaf)
+    # Get start/stop in the full tree for a given index (branch)
     start = 0
     current_tree = tree
     for idx in index:
-        start += sum(leaf.size for leaf in current_tree._leaves[:idx])
-        current_tree = current_tree._leaves[idx]
+        start += sum(branch.size for branch in current_tree._branches[:idx])
+        current_tree = current_tree._branches[idx]
     return start, start + current_tree.size
 
 
 def _replace_in_tree(tree, index, sub):
-    # Replace a leaf in the tree, return start/stop of replaced leaf
+    # Replace a branch in the tree, return start/stop of replaced branch
     start = 0
     current_tree = tree
     for idx in index[:-1]:
-        start += sum(leaf.size for leaf in current_tree._leaves[:idx])
-        current_tree = current_tree._leaves[idx]
-    start += sum(leaf.size for leaf in current_tree._leaves[:index[-1]])
-    stop = start + current_tree._leaves[index[-1]].size
-    current_tree._leaves[index[-1]] = sub
+        start += sum(branch.size for branch in current_tree._branches[:idx])
+        current_tree = current_tree._branches[idx]
+    start += sum(branch.size for branch in current_tree._branches[:index[-1]])
+    stop = start + current_tree._branches[index[-1]].size
+    current_tree._branches[index[-1]] = sub
     return start, stop
 
 
@@ -1769,18 +1769,18 @@ class _ObservableTreeUpdateRef(object):
         if self._hook is not None:
             mask = np.ones(self._tree.size, dtype='?')
         for index in (self._indices if self._indices is not None else [None]):
-            leaf = _get_leaf(self._tree, index)
-            _labels = _format_input_labels(leaf, *args, **labels)
-            sub = leaf.get(**_labels)
+            branch = _get_leaf(self._tree, index)
+            _labels = _format_input_labels(branch, *args, **labels)
+            sub = branch.get(**_labels)
             if index is None:
                 new = sub
-                start, stop = 0, leaf.size
+                start, stop = 0, branch.size
             else:
                 start, stop = _replace_in_tree(new, index, sub)
             if self._hook is not None:
-                _mask = np.zeros(leaf.size, dtype='?')
-                for _index in leaf._index_labels(_labels):
-                    _mask[slice(*_get_range_in_tree(leaf, _index))] = True
+                _mask = np.zeros(branch.size, dtype='?')
+                for _index in branch._index_labels(_labels):
+                    _mask[slice(*_get_range_in_tree(branch, _index))] = True
                 mask[start:stop] = _mask
         if self._hook is not None:
             return self._hook(new, transform=np.flatnonzero(mask))
@@ -1795,13 +1795,13 @@ class _ObservableTreeUpdateRef(object):
         new = self.copy()
         transform = None
         for index in (self._indices if self._indices is not None else self._tree._index_labels({})):
-            leaf = _get_leaf(self._tree, index)
-            leaf = _get_update_ref(leaf)(leaf, select=self._select, hook=hook).__getitem__(masks)
+            branch = _get_leaf(self._tree, index)
+            branch = _get_update_ref(branch)(branch, select=self._select, hook=hook).__getitem__(masks)
             size = new.size
             if self._hook:
-                leaf, _transform = leaf
+                branch, _transform = branch
             size = new.size
-            start, stop = _replace_in_tree(new, index, leaf)
+            start, stop = _replace_in_tree(new, index, branch)
             if self._hook:
                 _transform = _pad_transform(_transform, start, size=size)
                 transform = _join_transform(transform, _transform, size=size)
@@ -1814,18 +1814,18 @@ class _ObservableTreeUpdateRef(object):
         """Select a range in one or more coordinates."""
         hook = None
         if self._hook:
-            def hook(leaf, transform): return leaf, transform
+            def hook(branch, transform): return branch, transform
             hook.weight = getattr(self._hook, 'weight', None)
 
         new = self._tree.copy()
         transform = None
         for index in (self._indices if self._indices is not None else self._tree._index_labels({})):
-            leaf = _get_leaf(self._tree, index)
-            leaf = _get_update_ref(leaf)(leaf, select=self._select, hook=hook).select(**limits)
+            branch = _get_leaf(self._tree, index)
+            branch = _get_update_ref(branch)(branch, select=self._select, hook=hook).select(**limits)
             if self._hook:
-                leaf, _transform = leaf
+                branch, _transform = branch
             size = new.size
-            start, stop = _replace_in_tree(new, index, leaf)
+            start, stop = _replace_in_tree(new, index, branch)
             if self._hook:
                 _transform = _pad_transform(_transform, start, size=size)
                 transform = _join_transform(transform, _transform, size=size)
@@ -1838,7 +1838,7 @@ class _ObservableTreeUpdateRef(object):
         """Match coordinates to those of input tree."""
         hook = None
         if self._hook:
-            def hook(leaf, transform): return leaf, transform
+            def hook(branch, transform): return branch, transform
             hook.weight = getattr(self._hook, 'weight', None)
 
         if self._indices is not None:
@@ -1848,28 +1848,28 @@ class _ObservableTreeUpdateRef(object):
             index = None
         tree = _get_leaf(self._tree, index)
         transforms, starts = [], []
-        leaves, ileaves = [], []
-        for ileaf, leaf in enumerate(observable._leaves):
-            _ileaf = tree._index_labels({k: v[ileaf] for k, v in observable._labels.items()}, flatten=True)
-            assert len(_ileaf) == 1 and len(_ileaf[0]) == 1
-            _ileaf = _ileaf[0][0]
-            _leaf = tree._leaves[_ileaf]
-            leaf = _get_update_ref(_leaf)(_leaf, select=self._select, hook=hook).match(leaf)
+        branches, ibranches = [], []
+        for ibranch, branch in enumerate(observable._branches):
+            _ibranch = tree._index_labels({k: v[ibranch] for k, v in observable._labels.items()}, flatten=True)
+            assert len(_ibranch) == 1 and len(_ibranch[0]) == 1
+            _ibranch = _ibranch[0][0]
+            _branch = tree._branches[_ibranch]
+            branch = _get_update_ref(_branch)(_branch, select=self._select, hook=hook).match(branch)
             if self._hook:
-                leaf, _transform = leaf
-            leaves.append(leaf)
-            ileaves.append(_ileaf)
+                branch, _transform = branch
+            branches.append(branch)
+            ibranches.append(_ibranch)
             if self._hook:
-                start, stop = _get_range_in_tree(tree, (_ileaf,))
+                start, stop = _get_range_in_tree(tree, (_ibranch,))
                 transforms.append(_transform)
                 starts.append((start, stop))
 
         if self._hook:
             transform = _concatenate_transforms(transforms, starts, size=tree.size)
         tree = tree.copy()
-        tree._leaves = leaves
-        tree._labels = {k: [v[idx] for idx in ileaves] for k, v in tree._labels.items()}
-        tree._strlabels = {k: [v[idx] for idx in ileaves] for k, v in tree._strlabels.items()}
+        tree._branches = branches
+        tree._labels = {k: [v[idx] for idx in ibranches] for k, v in tree._labels.items()}
+        tree._strlabels = {k: [v[idx] for idx in ibranches] for k, v in tree._strlabels.items()}
         new = tree
         if index is not None:
             new = self._tree.copy()
@@ -1890,10 +1890,10 @@ class _ObservableTreeUpdateRef(object):
             index = None
         at = _get_leaf(self._tree, index).at
 
-        def hook(leaf, transform=None):
+        def hook(branch, transform=None):
             if index is not None:
                 new = self._tree.copy()
-                start, stop = _replace_in_tree(new, index, leaf)
+                start, stop = _replace_in_tree(new, index, branch)
                 if self._hook is not None:
                     transform = _pad_transform(transform, start, size=self._tree.size)
             if self._hook is not None:
@@ -1917,35 +1917,35 @@ class LeafLikeObservableTree(ObservableTree):
 
     @property
     def _coords_names(self):
-        return self._leaves[0]._coords_names
+        return self._branches[0]._coords_names
 
     @property
     def _values_names(self):
-        return self._leaves[0]._values_names
+        return self._branches[0]._values_names
 
     @property
     def shape(self):
         """Observable shape."""
-        return self._leaves[0].shape
+        return self._branches[0].shape
 
     @property
     def size(self):
         """Observable size."""
-        return self._leaves[0].size
+        return self._branches[0].size
 
     def edges(self, *args, **kwargs):
         """Observable edges."""
-        return self._leaves[0].edges(*args, **kwargs)
+        return self._branches[0].edges(*args, **kwargs)
 
     def coords(self, *args, **kwargs):
         """Observable coordinates."""
-        return self._leaves[0].coords(*args, **kwargs)
+        return self._branches[0].coords(*args, **kwargs)
 
     def __getitem__(self, masks):
         indices = _format_masks(self.shape, masks)
         new = self.copy()
-        for ileaf, leaf in new._leaves:
-            new._leaves[ileaf] = leaf.__getitem__(indices)
+        for ibranch, branch in new._branches:
+            new._branches[ibranch] = branch.__getitem__(indices)
         return new
 
     @property
@@ -1961,9 +1961,9 @@ class LeafLikeObservableTree(ObservableTree):
     def _average(cls, observables, weights=None):
         # Average multiple observables
         new = observables[0].copy()
-        for ileaf, leaf in enumerate(new._leaves):
-            labels = {k: v[ileaf] for k, v in new._labels.items()}
-            new._leaves[ileaf] = leaf._average([observable.get(**labels) for observable in observables], weights=weights)
+        for ibranch, branch in enumerate(new._branches):
+            labels = {k: v[ibranch] for k, v in new._labels.items()}
+            new._branches[ibranch] = branch._average([observable.get(**labels) for observable in observables], weights=weights)
         return new
 
     @classmethod

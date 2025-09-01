@@ -326,7 +326,7 @@ class Count2Jackknife(LeafLikeObservableTree):
             with np.errstate(divide='ignore', invalid='ignore'):
                 self._data[axis] /= dcounts.sum(axis=reduce_axis)
         for name in ['size1', 'size2']:
-            if name in self._leaves[0]._meta:
+            if name in self._branches[0]._meta:
                 self._meta[name] = sum(count._meta[name] for count in self.get(cross='ii'))
 
     @property
@@ -1278,8 +1278,8 @@ class Count2CorrelationWedges(ObservableTree):
     def _eq_label(self, label1, label2):
         if not isinstance(label2, str):
             label2 = np.array(label2)
-            leaf = self._leaves[self.wedges.index(label1)]
-            return np.allclose(label2, leaf.mu_edges)
+            branch = self._branches[self.wedges.index(label1)]
+            return np.allclose(label2, branch.mu_edges)
         return label1 == label2
 
     @plotter
