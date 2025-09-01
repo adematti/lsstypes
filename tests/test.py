@@ -529,7 +529,7 @@ def test_savetxt():
             k_edges = np.column_stack([k_edges[:-1], k_edges[1:]])
             k = np.mean(k_edges, axis=-1)
             poles.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size) + 1j * rng.uniform(size=k.size)))
-        return Mesh2SpectrumPoles(poles, ells=ells)
+        return Mesh2SpectrumPoles(poles, ells=ells, attrs={'zeff': np.float64(0.8)})
 
     spectrum = get_spectrum()
     spectrum.write(fn)

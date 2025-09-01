@@ -73,15 +73,29 @@ def _npy_auto_format_specifier(array):
         raise TypeError(f"Unsupported dtype: {array.dtype}")
 
 
+import json
+
+class NumpyEncoder(json.JSONEncoder):
+
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        elif isinstance(obj, (np.floating,)):
+            return float(obj)
+        elif isinstance(obj, (np.complexfloating,)):
+            return complex(obj)
+        return super().default(obj)
+
+
+
 def _txt_recursively_write_dict(path, dic, with_attrs=True):
     """Save a nested dictionary of arrays to an HDF5 file using h5py."""
     utils.mkdir(path)
     for key, item in dic.items():
         path_key = os.path.join(path, key)
         if with_attrs and key == 'attrs':
-            import json
             with open(path_key + '.json', 'w') as file:
-                json.dump(item, file)
+                json.dump(item, file, cls=NumpyEncoder)
             continue  # handle attrs below
 
         if isinstance(item, dict):
@@ -107,7 +121,6 @@ def _txt_recursively_read_dict(path='/'):
             dic[key] = _txt_recursively_read_dict(path_key)
         elif os.path.isfile(path_key):
             if path_key.endswith('.json'):
-                import json
                 with open(path_key, 'r') as file:
                     dic['attrs'] = json.load(file)
                 continue
@@ -295,10 +308,24 @@ def register_type(cls):
     return cls
 
 
-def deep_eq(obj1, obj2, equal_nan=True, raise_error=False, label=None):
+def deep_eq(obj1, obj2, equal_nan=True, type_permissive=True, raise_error=False, label=None):
     """(Recursively) test equality between ``obj1`` and ``obj2``."""
     if raise_error:
         label_str = f' for object {label}' if label is not None else ''
+
+    def array_equal(obj1, obj2):
+        toret = False
+        try:
+            toret = np.array_equal(obj1, obj2, equal_nan=equal_nan)
+        except TypeError:  # nan not supportedt
+            try:
+                toret = np.array_equal(obj1, obj2)
+            except:
+                pass
+        if not toret and raise_error:
+            raise ValueError(f'Not equal: {obj2} vs {obj1}{label_str}')
+        return toret
+
     if type(obj2) is type(obj1):
         if isinstance(obj1, dict):
             if obj2.keys() == obj1.keys():
@@ -311,13 +338,9 @@ def deep_eq(obj1, obj2, equal_nan=True, raise_error=False, label=None):
             elif raise_error:
                 raise ValueError(f'Different lengths: {len(obj2)} vs {len(obj1)}{label_str}')
         else:
-            try:
-                toret = np.array_equal(obj1, obj2, equal_nan=equal_nan)
-            except TypeError:  # nan not supported
-                toret = np.array_equal(obj1, obj2)
-            if not toret and raise_error:
-                raise ValueError(f'Not equal: {obj2} vs {obj1}{label_str}')
-            return toret
+            return array_equal(obj1, obj2)
+    if type_permissive:
+        return array_equal(obj1, obj2)
     if raise_error:
         raise ValueError(f'Not same type: {type(obj2)} vs {type(obj1)}{label_str}')
     return False
