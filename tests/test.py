@@ -510,6 +510,32 @@ def test_readme():
         rebinned.write('rebinned.hdf5')
 
 
+def test_savetxt():
+    test_dir = Path('_tests')
+    test_dir.mkdir(exist_ok=True)
+
+    a = np.linspace(0., 1., 10)
+    a = a - 1j * a
+    fn = test_dir / 'test.txt'
+    np.savetxt(fn, a, fmt='%.4f%+.4fj')
+    a = np.loadtxt(fn, dtype=np.complex128)
+
+    def get_spectrum(seed=None):
+        ells = [0, 2, 4]
+        rng = np.random.RandomState(seed=seed)
+        poles = []
+        for ell in ells:
+            k_edges = np.linspace(0., 0.2, 41)
+            k_edges = np.column_stack([k_edges[:-1], k_edges[1:]])
+            k = np.mean(k_edges, axis=-1)
+            poles.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size) + 1j * rng.uniform(size=k.size)))
+        return Mesh2SpectrumPoles(poles, ells=ells)
+
+    spectrum = get_spectrum()
+    spectrum.write(fn)
+    assert read(fn) == spectrum
+
+
 if __name__ == '__main__':
 
     test_tree()
@@ -520,3 +546,4 @@ if __name__ == '__main__':
     test_matrix()
     test_external()
     test_readme()
+    test_savetxt()

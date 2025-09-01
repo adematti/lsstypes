@@ -61,6 +61,8 @@ def _npy_auto_format_specifier(array):
         return '%d'
     elif np.issubdtype(array.dtype, np.floating):
         return '%.18e'
+    elif np.issubdtype(array.dtype, np.complexfloating):
+        return '%.18e+%.18ej'
     elif np.issubdtype(array.dtype, np.str_):
         maxlen = array.dtype.itemsize // 4  # 4 bytes per unicode char
         return f'%{maxlen}s'
