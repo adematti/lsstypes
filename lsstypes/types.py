@@ -33,11 +33,13 @@ class Mesh2SpectrumPole(ObservableLeaf):
     _name = 'mesh2spectrumpole'
 
     def __init__(self, k=None, k_edges=None, num_raw=None, num_shotnoise=None, norm=None, nmodes=None, ell=None, attrs=None):
-        self.__pre_init__(k=k, k_edges=k_edges, coords=['k'], attrs=attrs)
+        kw = dict(k=k, k_edges=k_edges)
+        if k_edges is None: kw.pop('k_edges')
+        self.__pre_init__(**kw, coords=['k'], attrs=attrs)
         if num_shotnoise is None: num_shotnoise = np.zeros_like(num_raw)
         if norm is None: norm = np.ones_like(num_raw)
         if nmodes is None: nmodes = np.ones_like(num_raw, dtype='i4')
-        self._update(k=k, k_edges=k_edges, num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes)
+        self._update(**kw, num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes)
         if ell is not None:
             self._meta['ell'] = ell
 
@@ -781,7 +783,7 @@ def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_e
                 tmp = count / count_mu
                 # Integration over mu
                 tmp = (2. * ellout + 1.) * np.sum(tmp * mask_nonzero * (integ(muedges[..., 1]) - integ(muedges[..., 0])), axis=-1) / np.sum(mask_nonzero * (muedges[..., 1] - muedges[..., 0]))  # normalization of mu-integral over non-empty s-rebinned RR(s, mu) bins
-                matrix[idx, iout] = tmp
+                matrix[iout, idx] = tmp
             matrix = matrix.dot(binmatrix)
             row.append(matrix)
         full_matrix.append(row)
@@ -869,7 +871,7 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
             RR0 = np.sum(estimator_RR.sum(axis=-1))
             norm = np.sum(estimator_norm.sum(axis=-1))
 
-        value = Count2CorrelationPole(value=value, s=estimator.coords('s'), s_edges=sedges, ell=ell, RR0=RR0, norm=norm)
+        value = Count2CorrelationPole(value=value, s=estimator.coords('s'), s_edges=sedges, ell=ell, RR0=RR0, norm=norm, attrs=estimator.attrs)
         values.append(value)
     if isscalar:
         values = values[0]
@@ -952,7 +954,7 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
             value = np.sum(estimator_value[:, mask_w] * dmu[mask_w], axis=-1) / np.sum(dmu[mask_w])
             RR0 = np.sum(estimator_RR.sum(axis=-1))
             norm = np.sum(estimator_norm.sum(axis=-1))
-        value = Count2CorrelationWedge(value=value, s=estimator.coords('s'), s_edges=sedges, mu_edges=wedge, RR0=RR0, norm=norm)
+        value = Count2CorrelationWedge(value=value, s=estimator.coords('s'), s_edges=sedges, mu_edges=wedge, RR0=RR0, norm=norm, attrs=estimator.attrs)
         values.append(value)
     if isscalar:
         values = values[0]
@@ -1012,7 +1014,7 @@ def _project_to_wp(estimator, ignore_nan=False, kw_covariance=None):
         RR0 = np.sum(estimator_RR, axis=-1)
         norm = np.sum(estimator_norm, axis=-1)
     toret = []
-    value = Count2CorrelationWp(value=value, rp=estimator.coords('rp'), rp_edges=estimator.edges('rp'), pi_edges=estimator.edges('pi')[[0, -1], [0, 1]], RR0=RR0, norm=norm)
+    value = Count2CorrelationWp(value=value, rp=estimator.coords('rp'), rp_edges=estimator.edges('rp'), pi_edges=estimator.edges('pi')[[0, -1], [0, 1]], RR0=RR0, norm=norm, attrs=estimator.attrs)
     toret.append(value)
     if return_covariance:
         realizations = [_project_to_wp(estimator.realization(ii, **kw_covariance), ignore_nan=ignore_nan) for ii in estimator.realizations]
@@ -1051,6 +1053,7 @@ class Count2CorrelationPole(ObservableLeaf):
 
     def __init__(self, s=None, s_edges=None, value=None, RR0=None, norm=None, ell=None, attrs=None):
         if RR0 is None: RR0 = np.ones_like(value)
+        if norm is None: norm = np.ones_like(value)
         super().__init__(s=s, s_edges=s_edges, value=value, RR0=RR0, norm=norm, coords=['s'], attrs=attrs)
         if ell is not None:
             self._meta['ell'] = ell
@@ -1195,6 +1198,7 @@ class Count2CorrelationWedge(ObservableLeaf):
 
     def __init__(self, s=None, s_edges=None, mu_edges=None, value=None, RR0=None, norm=None, attrs=None):
         if RR0 is None: RR0 = np.ones_like(value)
+        if norm is None: norm = np.ones_like(value)
         super().__init__(s=s, s_edges=s_edges, value=value, RR0=RR0, norm=norm, coords=['s'], attrs=attrs)
         if mu_edges is not None:
             mu_edges = np.array(mu_edges)
@@ -1339,6 +1343,8 @@ class Count2CorrelationWp(ObservableLeaf):
     _name = 'count2correlationwp'
 
     def __init__(self, rp=None, rp_edges=None, pi_edges=None, value=None, RR0=None, norm=None, attrs=None):
+        if RR0 is None: RR0 = np.ones_like(value)
+        if norm is None: norm = np.ones_like(value)
         super().__init__(rp=rp, rp_edges=rp_edges, value=value, RR0=RR0, norm=norm, coords=['rp'], attrs=attrs)
         if pi_edges is not None:
             pi_edges = np.array(pi_edges)

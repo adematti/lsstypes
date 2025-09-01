@@ -267,7 +267,7 @@ def test_types(show=False):
         rng = np.random.RandomState(seed=seed)
         if mode == 'smu':
             coords = ['s', 'mu']
-            edges = [np.linspace(0., 200., 51), np.linspace(-1., 1., 101)]
+            edges = [np.linspace(0., 200., 201), np.linspace(-1., 1., 101)]
         if mode == 'rppi':
             coords = ['rp', 'pi']
             edges = [np.linspace(0., 200., 51), np.linspace(-20., 20., 101)]
@@ -327,7 +327,7 @@ def test_types(show=False):
     #print(correlation3.edges('s'))
     assert correlation2.shape[0] < correlation.shape[0]
     assert correlation3.shape[0] < correlation2.shape[0]
-    value, window = correlation.project(ells=[0, 2, 4], kw_window=dict())
+    value, window = correlation3.project(ells=[0, 2, 4], kw_window=dict(RR=correlation.get('RR')))
     value.plot(show=show)
     window.plot(show=show)
 

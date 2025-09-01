@@ -293,7 +293,7 @@ def register_type(cls):
     return cls
 
 
-def deep_eq(obj1, obj2, equal_nan=True, raise_error=False, label=None):
+def deep_eq(obj1, obj2, equal_nan=True, raise_error=True, label=None):
     """(Recursively) test equality between ``obj1`` and ``obj2``."""
     if raise_error:
         label_str = f' for object {label}' if label is not None else ''
@@ -440,7 +440,7 @@ class ObservableLeaf(object):
         self._attrs = dict(attrs or {})
         self._meta = dict(meta or {})
         self._data = dict(data)
-        self._coords_names = list(coords)
+        self._coords_names = list(coords or [])
 
     def __post_init__(self):
         # Check data consistency
@@ -835,7 +835,8 @@ class ObservableLeaf(object):
     def __getstate__(self, to_file=False):
         state = dict(self._data)
         for name in ['values_names', 'coords_names']:
-            state[name] = list(getattr(self, '_' + name))
+            state[name] = list(getattr(self, f'_{name}'))
+            if not state[name]: state.pop(name)
         state['name'] = self._name
         if self._attrs: state['attrs'] = dict(self._attrs)
         if self._meta: state['meta'] = dict(self._meta)
@@ -843,7 +844,7 @@ class ObservableLeaf(object):
 
     def __setstate__(self, state):
         for name in ['values_names', 'coords_names']:
-            setattr(self, '_' + name, [str(n) for n in state[name]])
+            setattr(self, '_' + name, [str(n) for n in state.get(name, [])])
         self._attrs = state.get('attrs', {})  # because of hdf5 reader
         self._meta = state.get('meta', {})
         self._data = {name: state[name] for name in self._values_names + self._coords_names}
@@ -2100,10 +2101,16 @@ class WindowMatrix(object):
 
     _name = 'windowmatrix'
 
-    def __init__(self, value, observable, theory):
+    def __init__(self, value, observable, theory, attrs=None):
         self._value = value
         self._observable = observable
         self._theory = theory
+        self._attrs = dict(attrs or {})
+
+    @property
+    def attrs(self):
+        """Other attributes."""
+        return self._attrs
 
     @property
     def shape(self):
@@ -2162,12 +2169,14 @@ class WindowMatrix(object):
         state = {}
         state['name'] = self._name
         state['value'] = self.value()
+        state['attrs'] = dict(self.attrs)
         for name in ['observable', 'theory']:
             state[name] = getattr(self, name).__getstate__(to_file=to_file)
         return state
 
     def __setstate__(self, state):
         self._value = state['value']
+        self._attrs = state.get('attrs', {})
         for name in ['observable', 'theory']:
             setattr(self, '_' + name, from_state(state[name]))
         return state
@@ -2354,9 +2363,15 @@ class CovarianceMatrix(object):
 
     _name = 'covariancematrix'
 
-    def __init__(self, value, observable):
+    def __init__(self, value, observable, attrs=None):
         self._value = value
         self._observable = observable
+        self._attrs = dict(attrs or {})
+
+    @property
+    def attrs(self):
+        """Other attributes."""
+        return self._attrs
 
     @property
     def shape(self):
@@ -2414,12 +2429,14 @@ class CovarianceMatrix(object):
         state = {}
         state['name'] = self._name
         state['value'] = self.value()
+        state['attrs'] = dict(self.attrs)
         for name in ['observable']:
             state[name] = getattr(self, name).__getstate__(to_file=to_file)
         return state
 
     def __setstate__(self, state):
         self._value = state['value']
+        self._attrs = state.get('attrs', {})
         for name in ['observable']:
             setattr(self, '_' + name, from_state(state[name]))
 
@@ -2575,10 +2592,16 @@ class GaussianLikelihood(object):
 
     _name = 'gaussianlikelihood'
 
-    def __init__(self, observable, window, covariance):
+    def __init__(self, observable, window, covariance, attrs=None):
         self._observable = observable
         self._window = window
         self._covariance = covariance
+        self._attrs = dict(attrs or {})
+
+    @property
+    def attrs(self):
+        """Other attributes."""
+        return self._attrs
 
     @property
     def observable(self):
@@ -2638,11 +2661,13 @@ class GaussianLikelihood(object):
     def __getstate__(self, to_file=False):
         state = {}
         state['name'] = self._name
+        state['attrs'] = dict(self._attrs)
         for name in ['observable', 'window', 'covariance']:
             state[name] = getattr(self, name).__getstate__(to_file=to_file)
         return state
 
     def __setstate__(self, state):
+        self._attrs = state.get('attrs', {})
         for name in ['observable', 'window', 'covariance']:
             setattr(self, '_' + name, from_state(state[name]))
         return state
