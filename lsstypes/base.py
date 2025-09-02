@@ -222,7 +222,8 @@ def write(filename, observable):
     filename : str
         Output file name.
     """
-    _write(filename, observable.__getstate__(to_file=True))
+    from lsstypes import __version__
+    _write(filename, dict(_version=__version__) | observable.__getstate__(to_file=True))
 
 
 def read(filename):
@@ -238,7 +239,9 @@ def read(filename):
     -------
     ObservableLeaf or ObservableTree
     """
-    return from_state(_read(filename))
+    state = _read(filename)
+    state.pop('_version', None)
+    return from_state(state)
 
 
 def _format_masks(shape, masks):
