@@ -45,7 +45,7 @@ def test_tree():
     assert len(leaf4.coords('s')) == 41
 
     tree = ObservableTree(leaves, keys=labels)
-    assert tree.labels(keys_only=True) == ['keys']
+    assert tree.labels(only='keys') == ['keys']
     assert tree.labels() == [{'keys': 'DD'}, {'keys': 'DR'}, {'keys': 'RR'}]
     assert len(tree.value()) == tree.size
     tree2 = tree.at(keys='DD').select(s=(10., 80.))
@@ -61,12 +61,14 @@ def test_tree():
     DD = tree.get('DD').match(RR)
     assert DD.shape == RR.shape
     assert np.allclose(DD.mu, RR.mu)
+    tree2 = tree.clone(value=np.zeros(tree.size))
+    assert np.allclose(tree2.value(), 0.)
 
     k = np.linspace(0., 0.2, 21)
     spectrum = rng.uniform(size=k.size)
     leaf = ObservableLeaf(spectrum=spectrum, k=k, coords=['k'], attrs=dict(los='x'))
     tree2 = ObservableTree([tree, leaf], observable=['correlation', 'spectrum'])
-    assert tree2.labels(keys_only=True) == ['observable', 'keys']
+    assert tree2.labels(only='keys') == ['observable', 'keys']
     assert tree2.labels(level=1) == [{'observable': 'correlation'}, {'observable': 'spectrum'}]
     assert tree2.labels() == [{'observable': 'correlation', 'keys': 'DD'}, {'observable': 'correlation', 'keys': 'DR'}, {'observable': 'correlation', 'keys': 'RR'}, {'observable': 'spectrum'}]
 
@@ -113,6 +115,11 @@ def test_at():
 
     poles2 = poles.at(2).at(k=(0.04, 0.14)).select(k=(0.1, 0.12)) #slice(0, None, 2))
     assert len(poles2.get(2).k) == 24
+
+
+    poles2 = poles.at(2).clone(value=np.zeros(poles.get(2).size))
+    assert np.allclose(poles2.get(2).value(), 0.)
+    assert not np.allclose(poles2.value(), 0.)
 
     def get_counts():
         s_edges = np.linspace(0., 100., 21)

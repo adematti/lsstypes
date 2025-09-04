@@ -500,6 +500,10 @@ class ObservableLeaf(object):
         if not isinstance(axis, str):
             axis = self._coords_names[axis]
         edges = self.edges(axis=axis, default=None)
+        if center == 'mid_if_edges_and_nan':
+            mid = self.coords(axis=axis, center='mid_if_edges')
+            coord = self._data[axis]
+            return np.where(np.isnan(coord), mid, coord)
         if center == 'mid_if_edges':
             if edges is None: center = None
             else: center = 'mid'
@@ -778,12 +782,15 @@ class ObservableLeaf(object):
         if 'value' in kwargs:
             kwargs[self._values_names[0]] = kwargs.pop('value')
         for name, value in kwargs.items():
-            if name not in self._data: raise ValueError('{name} not unknown')
+            if name not in self._coords_names + self._values_names: raise ValueError('{name} not unknown')
             self._data[name] = value
 
     def clone(self, **kwargs):
         """Copy and update data."""
         new = self.copy()
+        for name in ['attrs', 'meta']:
+            if name in kwargs:
+                setattr(new, f'_{name}', dict(kwargs.pop(name) or {}))
         new._update(**kwargs)
         return new
 
@@ -1328,7 +1335,7 @@ class ObservableTree(object):
         branches_labels = []
         for branch in self._branches:
             if not branch._is_leaf:
-                branches_labels += branch.labels(keys_only=True)
+                branches_labels += branch.labels(only='keys')
         self._labels, self._strlabels = {}, {}
         nbranches = len(branches)
         assert nbranches, 'At least one branch must be provided'
@@ -1389,7 +1396,7 @@ class ObservableTree(object):
         """Dictionary of attributes associated with the tree."""
         return self._attrs
 
-    def labels(self, level=None, keys_only=False, as_str=False):
+    def labels(self, level=None, only=False, as_str=False):
         """
         Return a list of dicts with the labels for each leaf.
 
@@ -1397,8 +1404,9 @@ class ObservableTree(object):
         ----------
         level : int, optional
             Level to retrieve labels from. If `None`, retrieve all levels.
-        keys_only : bool, optional
-            If `True`, return only the list of unique keys (i.e. not label values) at the current level.
+        only : bool, str, optional
+            If 'keys' or 'names', return only the list of unique keys (i.e. not label values) at the current level.
+            If 'values', return the list of values at the current level.
         as_str : bool, optional
             If `True`, return labels as strings.
 
@@ -1408,13 +1416,13 @@ class ObservableTree(object):
         """
         toret = []
         if level == 0: return toret
-        if keys_only:
+        if only in ['keys', 'names']:
             toret += [label for label in self._labels if label not in toret]
             for ibranch, branch in enumerate(self._branches):
                 if branch._is_leaf:
                     pass
                 else:
-                    for label in branch.labels(level=level - 1 if level is not None else None, keys_only=keys_only, as_str=as_str):
+                    for label in branch.labels(level=level - 1 if level is not None else None, only=only, as_str=as_str):
                         if label not in toret: toret.append(label)
         else:
             for ibranch, branch in enumerate(self._branches):
@@ -1422,9 +1430,10 @@ class ObservableTree(object):
                 if level == 1 or branch._is_leaf:
                     toret.append(self_labels)
                 else:
-                    for labels in branch.labels(level=level - 1 if level is not None else None, keys_only=keys_only, as_str=as_str):
+                    for labels in branch.labels(level=level - 1 if level is not None else None, only=False, as_str=as_str):
                         toret.append(self_labels | labels)
-
+            if only == 'values':
+                toret = [list(label.values()) for label in toret]
         return toret
 
     def __getattr__(self, name):
@@ -1612,15 +1621,33 @@ class ObservableTree(object):
     def __array__(self):
         return self.value(concatenate=True)
 
-    def clone(self, value=None):
-        """Return a copy of the tree, optionally with updated (main) `value`."""
+    def clone(self, **kwargs):
+        """
+        Return a copy of the tree, with updated values.
+        One can provide for each kwargs entry either a list of values,
+        with ``None`` for the branches not to be updated, or a (concatenated) numpy array.
+        """
         new = self.copy()
-        if value is None:
+        if not kwargs:
             return new
+        for name in ['attrs', 'meta']:
+            if name in kwargs:
+                setattr(new, f'_{name}', dict(kwargs.pop(name) or {}))
+
+        def _get_values(kwargs, ibranch, start, stop):
+            kw = dict()
+            for name, value in kwargs.items():
+                if isinstance(value, (tuple, list)):
+                    v = value[ibranch]
+                else:
+                    v = value[start:stop]
+                if v is not None: kw[name] = v
+            return kw
+
         start = 0
         for ibranch, branch in enumerate(new._branches):
             stop = start + branch.size
-            new._branches[ibranch] = branch.clone(value=value[start:stop])
+            new._branches[ibranch] = branch.clone(**_get_values(kwargs, ibranch, start, stop))
             start = stop
         return new
 
@@ -1786,6 +1813,24 @@ class _ObservableTreeUpdateRef(object):
         self._select = select
         self._indices = indices
         self._hook = hook
+
+    def clone(self, **kwargs):
+        """
+        Return a copy of the tree, with updated values.
+        One can provide for each kwargs entry either a list of values,
+        with ``None`` for the branches not to be updated, or a (concatenated) numpy array.
+        """
+        new = self._tree.copy()
+        for index in (self._indices if self._indices is not None else [None]):
+            branch = _get_leaf(self._tree, index)
+            sub = branch.clone(**kwargs)
+            if index is None:
+                new = sub
+            else:
+                start, stop = _replace_in_tree(new, index, sub)
+            if self._hook is not None:
+                raise NotImplementedError('hook not implemented for clone')
+        return new
 
     def get(self, *args, **labels):
         """Return subtree or leaf corresponding to input labels."""
@@ -2186,8 +2231,12 @@ class WindowMatrix(object):
         """
         new = self.copy()
         for name, value in kwargs.items():
-            if name in ['observable', 'theory', 'value']:
+            if name in ['attrs']:
+                setattr(new, '_' + name, dict(value or {}))
+            elif name in ['observable', 'theory', 'value']:
                 setattr(new, '_' + name, value)
+            else:
+                raise ValueError(f'Unknown attribute {name}')
         return new
 
     def __getstate__(self, to_file=False):
@@ -2446,8 +2495,12 @@ class CovarianceMatrix(object):
         """Copy and update data."""
         new = self.copy()
         for name, value in kwargs.items():
-            if name in ['observable', 'value']:
+            if name in ['attrs']:
+                setattr(new, '_' + name, dict(value or {}))
+            elif name in ['observable', 'value']:
                 setattr(new, '_' + name, value)
+            else:
+                raise ValueError(f'Unknown attribute {name}')
         return new
 
     def __getstate__(self, to_file=False):
@@ -2679,8 +2732,12 @@ class GaussianLikelihood(object):
         """Copy and update likelihood."""
         new = self.copy()
         for name, value in kwargs.items():
-            if name in ['observable', 'window', 'covariance']:
+            if name in ['attrs']:
+                setattr(new, '_' + name, dict(value or {}))
+            elif name in ['observable', 'window', 'covariance']:
                 setattr(new, '_' + name, value)
+            else:
+                raise ValueError(f'Unknown attribute {name}')
         return new
 
     def __getstate__(self, to_file=False):

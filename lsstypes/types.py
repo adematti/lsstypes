@@ -32,19 +32,23 @@ class Mesh2SpectrumPole(ObservableLeaf):
     """
     _name = 'mesh2spectrumpole'
 
-    def __init__(self, k=None, k_edges=None, num_raw=None, num_shotnoise=None, norm=None, nmodes=None, ell=None, attrs=None):
+    def __init__(self, k=None, k_edges=None, num_raw=None, num_shotnoise=None, norm=None, nmodes=None, ell=None, attrs=None, **kwargs):
         kw = dict(k=k, k_edges=k_edges)
         if k_edges is None: kw.pop('k_edges')
         self.__pre_init__(**kw, coords=['k'], attrs=attrs)
         if num_shotnoise is None: num_shotnoise = np.zeros_like(num_raw)
         if norm is None: norm = np.ones_like(num_raw)
         if nmodes is None: nmodes = np.ones_like(num_raw, dtype='i4')
-        self._update(**kw, num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes)
+        self._values_names = ['value', 'num_shotnoise', 'norm', 'nmodes']
+        for name in list(kwargs):
+            if name in self._values_names: pass
+            elif name in ['volume']: self._values_names.append(name)
+            else: raise ValueError('{name} not unknown')
+        self._update(num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes, **kwargs)
         if ell is not None:
             self._meta['ell'] = ell
 
     def _update(self, **kwargs):
-        self._values_names = ['value', 'num_shotnoise', 'norm', 'nmodes']
         for name in list(kwargs):
             if name in ['k', 'k_edges'] + self._values_names:
                 self._data[name] = kwargs.pop(name)
@@ -52,7 +56,7 @@ class Mesh2SpectrumPole(ObservableLeaf):
             if name in ['num_raw']:
                 self._data['value'] = (kwargs.pop(name) - self.num_shotnoise) / self.norm
         if kwargs:
-            raise ValueError(f'Could not interpret arguments {kwargs}')
+            raise ValueError(f'{kwargs} unknown')
 
     def _plabel(self, name):
         if name == 'k':
@@ -891,7 +895,7 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
         ells = kw_window.get('ells', (0, 2, 4))
         s, s_edges, window = _window_matrix_RR(RR.value(), RR.edges('s'), RR.edges('mu'), estimator.edges('s'), ells=ells, out_ells=ells, resolution=kw_window.get('resolution', 1))
         theory = Count2CorrelationPoles([Count2CorrelationPole(s=s, s_edges=s_edges, value=np.zeros_like(s), ell=ell) for ell in ells])
-        window = WindowMatrix(value=window, observable=values.clone(np.zeros_like(values.value())), theory=theory)
+        window = WindowMatrix(value=window, observable=values.clone(value=np.zeros_like(values.value())), theory=theory)
         toret.append(window)
     return toret if len(toret) > 1 else toret[0]
 
@@ -1051,10 +1055,18 @@ class Count2CorrelationPole(ObservableLeaf):
     """
     _name = 'count2correlationpole'
 
-    def __init__(self, s=None, s_edges=None, value=None, RR0=None, norm=None, ell=None, attrs=None):
+    def __init__(self, s=None, s_edges=None, value=None, RR0=None, norm=None, ell=None, attrs=None, **kwargs):
+        kw = dict(s=s, s_edges=s_edges)
+        if s_edges is None: kw.pop('s_edges')
+        self.__pre_init__(**kw, coords=['s'], attrs=attrs)
         if RR0 is None: RR0 = np.ones_like(value)
         if norm is None: norm = np.ones_like(value)
-        super().__init__(s=s, s_edges=s_edges, value=value, RR0=RR0, norm=norm, coords=['s'], attrs=attrs)
+        self._values_names = ['value', 'norm', 'RR0']
+        for name in list(kwargs):
+            if name in self._values_names: pass
+            elif name in ['volume']: self._values_names.append(name)
+            else: raise ValueError('{name} not unknown')
+        self._update(value=value, norm=norm, RR0=RR0, **kwargs)
         if ell is not None:
             self._meta['ell'] = ell
 
