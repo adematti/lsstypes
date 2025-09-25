@@ -437,6 +437,22 @@ def _nan_to_zero(array):
     return np.where(np.isnan(array), 0., array)
 
 
+
+def _edges_name(axis):
+    return f'{axis}_edges'
+
+
+def _edges_names(axes):
+    return list(map(_edges_name, axes))
+
+
+def _check_data_names(self):
+    known_names = self._coords_names + self._values_names + _edges_names(self._coords_names)
+    for name in self._data:
+        if name not in known_names:
+            raise ValueError(f'{name} not unknown, expected one of {known_names}')
+
+
 @register_type
 class ObservableLeaf(object):
     """A compressed observable with named values and coordinates, supporting slicing, selection, and plotting."""
@@ -470,8 +486,7 @@ class ObservableLeaf(object):
     def __post_init__(self):
         # Check data consistency
         assert not any(k in self._forbidden_names for k in self._data), f'Cannot use {self._forbidden_names} as name for arrays'
-        _edges_names = [f'{axis}_edges' for axis in self._coords_names]
-        self._values_names = [name for name in self._data if name not in self._coords_names and name not in _edges_names]
+        self._values_names = [name for name in self._data if name not in self._coords_names and name not in _edges_names(self._coords_names)]
         assert len(self._values_names), 'Provide at least one value array'
 
     def __getattr__(self, name):
@@ -532,7 +547,7 @@ class ObservableLeaf(object):
             return {axis: self.edges(axis=axis) for axis in self._coords_names}
         if not isinstance(axis, str):
             axis = self._coords_names[axis]
-        axis_edges = f'{axis}_edges'
+        axis_edges = _edges_name(axis)
         if axis_edges in self._data:
             return self._data[axis_edges]
         if default is None:
@@ -610,7 +625,7 @@ class ObservableLeaf(object):
             new._data[name] = self._data[name][index]
         for axis, index in zip(self._coords_names, indices):
             new._data[axis] = new._data[axis][index]
-            axis_edges = f'{axis}_edges'
+            axis_edges = _edges_name(axis)
             if axis_edges in new._data:
                 new._data[axis_edges] = new._data[axis_edges][index]
         return new
@@ -661,7 +676,6 @@ class ObservableLeaf(object):
             return mask
 
         def _isin2d(array1, array2):
-            if array1.ndim == array2.ndim == 1: return np.isin(array1, array2)
             assert len(array1) == len(array2)
             toret = True
             for a1, a2 in zip(array1, array2): toret &= np.isin(a1, a2)
@@ -774,6 +788,7 @@ class ObservableLeaf(object):
             # all isn't implemented for scipy sparse, just check the sum of the boolean array
             norm = 1 / np.ravel(np.where((matrix != 0).sum(axis=-1) == 0, 1, matrix.sum(axis=-1)))[:, None]
             matrix = multiply(matrix, norm)
+
         if return_edges:
             return matrix, edges
         return matrix
@@ -781,9 +796,8 @@ class ObservableLeaf(object):
     def _update(self, **kwargs):
         if 'value' in kwargs:
             kwargs[self._values_names[0]] = kwargs.pop('value')
-        for name, value in kwargs.items():
-            if name not in self._coords_names + self._values_names: raise ValueError('{name} not unknown')
-            self._data[name] = value
+        self._data.update(kwargs)
+        _check_data_names(self)
 
     def clone(self, **kwargs):
         """Copy and update data."""
@@ -820,12 +834,13 @@ class ObservableLeaf(object):
         for iaxis, axis in enumerate(self._coords_names):
             limit = limits.pop(axis, None)
             if limit is None: continue
-            axis_edges = f'{axis}_edges'
+            axis_edges = _edges_name(axis)
             transform, edges = new._transform(limit, axis=axis, return_edges=True, center=center, full=False, name=axis)
             if transform.ndim == 1:  # mask
                 index = transform
                 for name in new._values_names:
-                    new._data[name] = np.take(new._data[name], index, axis=iaxis)
+                    # Cast to numpy array, else error with JAX: "NotImplementedError: The 'raise' mode to jnp.take is not supported."
+                    new._data[name] = np.take(np.asarray(new._data[name]), index, axis=iaxis)
                 new._data[axis] = new._data[axis][index]
                 if axis_edges in new._data:
                     new._data[axis_edges] = new._data[axis_edges][index]
@@ -880,8 +895,7 @@ class ObservableLeaf(object):
         self._attrs = state.get('attrs', {})  # because of hdf5 reader
         self._meta = state.get('meta', {})
         self._data = {name: state[name] for name in self._values_names + self._coords_names}
-        _edges_names = [f'{axis}_edges' for axis in self._coords_names]
-        for name in _edges_names:
+        for name in _edges_names(self._coords_names):
             if name in state: self._data[name] = state[name]
 
     def __eq__(self, other):
@@ -922,6 +936,7 @@ class ObservableLeaf(object):
             else:
                 _weights = weights
                 divide = True
+            if name in new._coords_names: divide = True
             assert len(_weights) == len(observables)
             new._data[name] = sum(weight * observable._data[name] for observable, weight in zip(observables, _weights))
             if divide: new._data[name] = new._data[name] / sum(_weights)
@@ -957,7 +972,7 @@ class ObservableLeaf(object):
             axis = new._coords_names[axis]
         iaxis = new._coords_names.index(axis)
         new._data[axis] = np.concatenate([observable._data[axis] for observable in observables], axis=0)
-        axis_edges = f'{axis}_edges'
+        axis_edges = _edges_name(axis)
         if axis_edges in new._data:
             new._data[axis_edges] = np.concatenate([observable._data[axis_edges] for observable in observables], axis=0)
         for name in new._values_names:
@@ -1010,11 +1025,11 @@ class _ObservableLeafUpdateHelper(object):
         return _ObservableLeafUpdateRef(self._observable, select, self._hook)
 
 
-def _pad_transform(transform, start, size=None):
+def _pad_transform(transform, start=0, stop=None, size=None):
     # Pad a 1d (index) or 2d (matrix) transform to full size
     if transform.ndim == 1:
         if np.issubdtype(transform.dtype, np.integer):
-            return start + transform
+            return np.concatenate([np.arange(start), start + transform, np.arange(stop, size)])
         mask = np.ones(size, dtype='?')
         mask[start:start + transform.size] = transform.ravel()
         return mask
@@ -1149,7 +1164,7 @@ class _ObservableLeafUpdateRef(object):
             sub_transform = sub._transform(limit=limits[axis], axis=axis, center=center, full=True if self._hook is not None else None, name=name)
             sub = sub.select(**{axis: limits[axis]}, center=center)
             sub._data[axis] = np.concatenate([new.coords(axis)[:start], sub.coords(axis), new.coords(axis)[stop:]], axis=0)
-            axis_edges = f'{axis}_edges'
+            axis_edges = _edges_name(axis)
             if axis_edges in new._data:
                 sub._data[axis_edges] = np.concatenate([self._observable.edges(axis)[:start], sub.edges(axis), self._observable.edges(axis)[stop:]], axis=0)
             shape = tuple(len(sub._data[axis]) for axis in sub._coords_names)
@@ -1158,7 +1173,7 @@ class _ObservableLeafUpdateRef(object):
 
             if self._hook is not None:
                 if sub_transform.ndim == 1:
-                    index1d = np.concatenate([np.arange(start), start + sub_transform, np.arange(new.shape[iaxis] - stop, new.shape[iaxis])], axis=0)
+                    index1d = _pad_transform(sub_transform, start=start, stop=stop, size=new.shape[iaxis])
                     transform = _ravel_index(index1d, shape=new.shape)
                 else:
                     if len(shape) == 1:
@@ -1701,6 +1716,19 @@ class ObservableTree(object):
         ObservableTree.__init__(new, branches, **labels)  # check labels
         return new
 
+    @classmethod
+    def concatenate(cls, observables, axis=0):
+        """
+        Concatenate multiple observables.
+        No check performed.
+        """
+        assert len(observables) >= 1, 'Provide at least 1 observable to concatenate'
+        new = observables[0].copy()
+        for ibranch, branch in enumerate(new._branches):
+            labels = {k: v[ibranch] for k, v in new._labels.items()}
+            new._branches[ibranch] = branch.concatenate([observable.get(**labels) for observable in observables], axis=axis)
+        return new
+
     @property
     def at(self):
         """Helper to select or slice the tree in-place."""
@@ -1873,7 +1901,7 @@ class _ObservableTreeUpdateRef(object):
             size = new.size
             start, stop = _replace_in_tree(new, index, branch)
             if self._hook:
-                _transform = _pad_transform(_transform, start, size=size)
+                _transform = _pad_transform(_transform, start=start, stop=stop, size=size)
                 transform = _join_transform(transform, _transform, size=size)
 
         if self._hook:
@@ -1897,7 +1925,7 @@ class _ObservableTreeUpdateRef(object):
             size = new.size
             start, stop = _replace_in_tree(new, index, branch)
             if self._hook:
-                _transform = _pad_transform(_transform, start, size=size)
+                _transform = _pad_transform(_transform, start=start, stop=stop, size=size)
                 transform = _join_transform(transform, _transform, size=size)
 
         if self._hook:
@@ -1945,7 +1973,7 @@ class _ObservableTreeUpdateRef(object):
             new = self._tree.copy()
             start, stop = _replace_in_tree(new, (index,), tree)
             if self._hook:
-                transform = _pad_transform(transform, start, size=self._tree.size)
+                transform = _pad_transform(transform, start=start, stop=stop, size=self._tree.size)
         if self._hook:
             return self._hook(new, transform=transform)
         return new
@@ -1965,7 +1993,7 @@ class _ObservableTreeUpdateRef(object):
                 new = self._tree.copy()
                 start, stop = _replace_in_tree(new, index, branch)
                 if self._hook is not None:
-                    transform = _pad_transform(transform, start, size=self._tree.size)
+                    transform = _pad_transform(transform, start=start, stop=stop, size=self._tree.size)
             if self._hook is not None:
                 return self._hook(new, transform=transform)
             return new
@@ -2123,7 +2151,7 @@ class _ObservableWindowMatrixUpdateHelper(object):
     def _select(self, observable, transform):
         _observable_name = ['observable', 'theory'][self._axis]
         if transform.ndim == 1:  # mask
-            value = np.take(self._matrix.value(), transform, axis=self._axis)
+            value = np.take(np.asarray(self._matrix.value()), transform, axis=self._axis)
         else:
             if self._axis == 0: value = transform.dot(self._matrix.value())
             else: value = transform.dot(self._matrix.value().T).T  # because transform can be a sparse matrix; works in all cases
@@ -2280,14 +2308,13 @@ class WindowMatrix(object):
             if sw is not None:
                 weight = sw(leaves)
             if weight is None:
-                weight = [np.ones_like(leaves[0].size) / len(leaves)] * len(leaves)
+                weight = [np.ones_like(leaves[0].value()) / len(leaves)] * len(leaves)
             return weight
 
         weights = _iter_on_tree(get_sumweight, [matrix.observable for matrix in matrices])
         weights = [np.concatenate(w, axis=0) for w in zip(*weights)]
         new._value = sum(weight[..., None] * matrix._value for matrix, weight in zip(matrices, weights))
         new._observable = matrices[0]._observable.sum([matrix.observable for matrix in matrices])
-
         return new
 
     def dot(self, theory, zpt=False, return_type='nparray'):
@@ -2381,6 +2408,7 @@ class WindowMatrix(object):
 
             for label in observable.labels(level=level):
                 leaf = observable.get(**label)
+                labels.append(','.join([observable._label_to_str(v) for v in label.values()]))
                 x.append(get_x(leaf))
                 start, stop = _get_range_in_tree(observable, observable._index_labels(label)[0])
                 indices.append(np.arange(start, stop))
@@ -2401,6 +2429,115 @@ class WindowMatrix(object):
         mat = [[self._value[np.ix_(index1, index2)] for index2 in indices[1]] for index1 in indices[0]]
         return utils.plot_matrix(mat, x1=x[0], x2=x[1], **kwargs)
 
+    @utils.plotter
+    def plot_slice(self, indices, axis='observable', level=None, color='C0', label=None, xscale='linear', yscale='log', fig=None):
+        """
+        Plot a slice of the window matrix along the specified indices.
+
+        Parameters
+        ----------
+        indices : int, array-like
+            Indices (or values) along which to slice the window matrix. Can be a single index or a list.
+        axis : str, optional
+            Axis, "observable" (alias: "o") or "theory" (alias: "t") to slice along.
+        level : int, optional
+            Level in tree at which define different panels. Default to the maximum depth.
+        color : str, default='C0'
+            Color for the plotted lines.
+        label : str, optional
+            Label for the plotted lines.
+        xscale : str, default='linear'
+            X-axis scale ('linear', 'log', etc.).
+        yscale : str, default='log'
+            Y-axis scale ('linear', 'log', etc.).
+        fig : matplotlib.figure.Figure, optional
+            Figure to plot into. If None, a new figure is created.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The matplotlib figure object.
+        """
+        from matplotlib import pyplot as plt
+        if np.ndim(indices) == 0: indices = [indices]
+        idxs = np.array(indices)
+        alphas = np.linspace(1, 0.2, len(indices))
+
+        def _get(observable):
+            xlabels, labels, x, edges, indices = [], [], [], [], []
+
+            def get_x(leaf):
+                xx = None
+                if len(leaf._coords_names) == 1:
+                    xx = leaf.coords(axis=leaf._coords_names[0])
+                    if xx.ndim > 1: xx = None
+                if xx is None:
+                    xx = np.arange(leaf.size)
+                return xx
+
+            def get_edges(leaf):
+                edges = leaf.edges(axis=leaf._coords_names[0])
+                return edges
+
+            if observable._is_leaf:
+                x.append(get_x(observable))
+                edges.append(get_edges(observable))
+                labels.append('')
+                indices.append(np.arange(observable.size))
+            else:
+                for label in observable.labels(level=level):
+                    leaf = observable.get(**label)
+                    labels.append(','.join([observable._label_to_str(v) for v in label.values()]))
+                    x.append(get_x(leaf))
+                    edges.append(get_edges(leaf))
+                    start, stop = _get_range_in_tree(observable, observable._index_labels(label)[0])
+                    indices.append(np.arange(start, stop))
+
+            return xlabels, labels, x, edges, indices
+
+        xlabels, labels, x, edges, indices = zip(*[_get(observable) for observable in [self.observable, self.theory]])
+        fshape = tuple(map(len, x))
+        if fig is None:
+            fig, lax = plt.subplots(*fshape, sharex=False, sharey=False, figsize=(8, 6), squeeze=False)
+        else:
+            lax = np.array(fig.axes).reshape(fshape[::-1])
+
+        axes = {'o': 0, 'observable': 0, 't': 1, 'theory': 1}
+        assert axis in axes, f'axis must be one of {list(axes)}'
+        iaxis = axes[axis]
+
+        for it, xt in enumerate(x[1]):
+            for io, xo in enumerate(x[0]):
+                value = self._value[np.ix_(indices[0][io], indices[1][it])]
+                for ix, idx in enumerate(idxs):
+                    ii = [io, it][iaxis]
+                    plotted_ii = [io, it][iaxis - 1]
+                    iidx = idx
+                    if np.issubdtype(idx.dtype, np.floating):
+                        iidx = np.abs(x[iaxis][ii] - idx).argmin()
+                    # Indices in approximate window matrix
+                    xx = x[iaxis - 1][plotted_ii]
+                    dx = 1.
+                    if iaxis == 0:  # axis = 'o', showing theory, dividing by integration element dx
+                        dx = edges[iaxis - 1][plotted_ii]
+                        dx = dx[..., 1] - dx[..., 0]
+                        if dx.ndim >= 1:  # e.g. bispectrum
+                            dx = dx.prod(axis=-1)
+                    v = np.take(value, iidx, axis=iaxis)
+                    v = v / dx
+                    if yscale == 'log': v = np.abs(v)
+                    ax = lax[io][it]
+                    ax.plot(xx, v, alpha=alphas[ix], color=color, label=label if ix == 0 else None)
+                if labels[1][it] or labels[0][io]:
+                    ax.set_title(r'${} \times {}$'.format(labels[1][it], labels[0][io]))
+                ax.set_xscale(xscale)
+                ax.set_yscale(yscale)
+                ax.grid(True)
+                if label and it == io == 0: lax[it][io].legend()
+
+        fig.tight_layout()
+        fig.subplots_adjust(hspace=0.35, wspace=0.25)
+        return fig
 
 
 class _CovarianceMatrixUpdateHelper(object):
@@ -2533,25 +2670,25 @@ class CovarianceMatrix(object):
         return write(filename, self)
 
     @utils.plotter
-    def plot(self, level=None, **kwargs):
+    def plot(self, level=None, corrcoef=False, **kwargs):
         """
         Plot covariance matrix.
 
         Parameters
         ----------
+        level : int, optional
+            Level in tree at which define different panels. Default to the maximum depth.
+        corrcoef : bool, option
+            If ``True``, plot correlation matrix.
         barlabel : str, default=None
             Optionally, label for the color bar.
-
         figsize : int, tuple, default=None
             Optionally, figure size.
-
         norm : matplotlib.colors.Normalize, default=None
             Scales the matrix to the canonical colormap range [0, 1] for mapping to colors.
             By default, the matrix range is mapped to the color bar range using linear scaling.
-
         labelsize : int, default=None
             Optionally, size for labels.
-
         fig : matplotlib.figure.Figure, default=None
             Optionally, a figure with at least ``len(self._observables) * len(self._observables)`` axes.
 
@@ -2578,6 +2715,7 @@ class CovarianceMatrix(object):
             else:
                 for label in observable.labels(level=level):
                     leaf = observable.get(**label)
+                    labels.append(','.join([observable._label_to_str(v) for v in label.values()]))
                     x.append(get_x(leaf))
                     start, stop = _get_range_in_tree(observable, observable._index_labels(label)[0])
                     indices.append(np.arange(start, stop))
@@ -2595,8 +2733,190 @@ class CovarianceMatrix(object):
             if label: kwargs.setdefault(f'xlabel{ilabel + 1:d}', label)
         for ilabel, label in enumerate(labels):
             if label: kwargs.setdefault(f'label{ilabel + 1:d}', label)
-        mat = [[self._value[np.ix_(index1, index2)] for index2 in indices[1]] for index1 in indices[0]]
+
+        value = self._value
+        if corrcoef:
+            std = self.std()
+            value = value / (std[..., None] * std)
+        mat = [[value[np.ix_(index1, index2)] for index2 in indices[1]] for index1 in indices[0]]
         return utils.plot_matrix(mat, x1=x[0], x2=x[1], **kwargs)
+
+    @utils.plotter
+    def plot_diag(self, offset=0, level=None, color='C0', xscale='linear', yscale='linear', ytransform=None, fig=None):
+        """
+        Plot diagonal (and optionally offset diagonals) of the covariance matrix.
+
+        Parameters
+        ----------
+        offset : int or array-like, default=0
+            Offset(s) from the main diagonal to plot. Can be a single integer or a list of offsets.
+        level : int, optional
+            Level in tree at which define different panels. Default to the maximum depth.
+        color : str, default='C0'
+            Color for the plotted lines.
+        xscale : str, default='linear'
+            X-axis scale ('linear', 'log', etc.).
+        yscale : str, default='linear'
+            Y-axis scale ('linear', 'log', etc.).
+        ytransform : callable, optional
+            Function to transform diagonal covariance values before plotting.
+        fig : matplotlib.figure.Figure, optional
+            Figure to plot into. If None, a new figure is created.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The matplotlib figure object.
+        """
+        import itertools
+        from matplotlib import pyplot as plt
+        offsets = np.atleast_1d(offset)
+        alphas = np.linspace(1, 0.2, len(offsets))
+
+        def _get():
+            xlabels, labels, x, indices = [], [], [], []
+            observable = self.observable
+
+            def get_x(leaf):
+                xx = None
+                if len(leaf._coords_names) == 1:
+                    xx = leaf.coords(axis=leaf._coords_names[0])
+                    if xx.ndim > 1: xx = None
+                if xx is None:
+                    xx = np.arange(leaf.size)
+                return xx
+
+            if observable._is_leaf:
+                x.append(get_x(observable))
+                labels.append('')
+                indices.append(np.arange(observable.size))
+            else:
+                for label in observable.labels(level=level):
+                    leaf = observable.get(**label)
+                    labels.append(','.join([observable._label_to_str(v) for v in label.values()]))
+                    x.append(get_x(leaf))
+                    start, stop = _get_range_in_tree(observable, observable._index_labels(label)[0])
+                    indices.append(np.arange(start, stop))
+
+            return xlabels, labels, x, indices
+
+        xlabels, labels, x, indices = _get()
+        fshape = (len(x),) * 2
+        if fig is None:
+            fig, lax = plt.subplots(*fshape, sharex=False, sharey=False, figsize=(8, 6), squeeze=False)
+        else:
+            lax = np.array(fig.axes).reshape(fshape[::-1])
+
+        for i1, i2 in itertools.product(*[list(range(s)) for s in fshape]):
+            value = self._value[np.ix_(indices[i1], indices[i2])]
+            for offset, alpha in zip(offsets, alphas):
+                index = np.arange(max(min(x[i].size - offset for i in [i1, i2]), 0))
+                flag = int(i2 > i1)
+                index1, index2 = index, index + offset
+                diag = value[index1, index2]
+                xx = x[i2 if flag else i1][index]
+                if ytransform is not None: diag = ytransform(xx, diag)
+                label = None
+                if i1 == i2 == 0: label = r'$\mathrm{{offset}} = {:d}$'.format(offset)
+                ax = lax[i2, i1]
+                if labels[i1] or labels[i2]: ax.set_title(r'${} \times {}$'.format(labels[i1], labels[i2]))
+                ax.plot(xx, diag, alpha=alpha, color=color, label=label)
+                ax.set_xscale(xscale)
+                ax.set_yscale(yscale)
+                ax.grid(True)
+                if i1 == i2 == 0 and len(offsets) > 1: ax.legend()
+
+        fig.tight_layout()
+        fig.subplots_adjust(hspace=0.35, wspace=0.25)
+        return fig
+
+    @utils.plotter
+    def plot_slice(self, indices, level=None, color='C0', label=None, xscale='linear', yscale='log', fig=None):
+        """
+        Plot a slice of the covariance matrix along the specified indices.
+
+        Parameters
+        ----------
+        indices : int, array-like
+            Indices (or values) along which to slice the covariance matrix. Can be a single index or a list.
+        level : int, optional
+            Level in tree at which define different panels. Default to the maximum depth.
+        color : str, default='C0'
+            Color for the plotted lines.
+        label : str, optional
+            Label for the plotted lines.
+        xscale : str, default='linear'
+            X-axis scale ('linear', 'log', etc.).
+        yscale : str, default='log'
+            Y-axis scale ('linear', 'log', etc.).
+        fig : matplotlib.figure.Figure, optional
+            Figure to plot into. If None, a new figure is created.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The matplotlib figure object.
+        """
+        import itertools
+        from matplotlib import pyplot as plt
+        if np.ndim(indices) == 0: indices = [indices]
+        idxs = np.array(indices)
+        alphas = np.linspace(1, 0.2, len(indices))
+
+        def _get():
+            xlabels, labels, x, indices = [], [], [], []
+            observable = self.observable
+
+            def get_x(leaf):
+                xx = None
+                if len(leaf._coords_names) == 1:
+                    xx = leaf.coords(axis=leaf._coords_names[0])
+                    if xx.ndim > 1: xx = None
+                if xx is None:
+                    xx = np.arange(leaf.size)
+                return xx
+
+            if observable._is_leaf:
+                x.append(get_x(observable))
+                labels.append('')
+                indices.append(np.arange(observable.size))
+            else:
+                for label in observable.labels(level=level):
+                    leaf = observable.get(**label)
+                    labels.append(','.join([observable._label_to_str(v) for v in label.values()]))
+                    x.append(get_x(leaf))
+                    start, stop = _get_range_in_tree(observable, observable._index_labels(label)[0])
+                    indices.append(np.arange(start, stop))
+
+            return xlabels, labels, x, indices
+
+        xlabels, labels, x, indices = _get()
+        fshape = (len(x),) * 2
+        if fig is None:
+            fig, lax = plt.subplots(*fshape, sharex=False, sharey=False, figsize=(8, 6), squeeze=False)
+        else:
+            lax = np.array(fig.axes).reshape(fshape[::-1])
+
+        for i1, i2 in itertools.product(*[list(range(s)) for s in fshape]):
+            value = self._value[np.ix_(indices[i1], indices[i2])]
+            ax = lax[i2, i1]
+            for ix, idx in enumerate(idxs):
+                iidx = idx
+                if np.issubdtype(idx.dtype, np.floating):
+                    iidx = np.abs(x[i1] - idx).argmin()
+                v = np.take(value, iidx, axis=0)
+                if yscale == 'log': value = np.abs(v)
+                xx = x[i2]
+                ax.plot(xx, v, alpha=alphas[ix], color=color, label=label if ix == 0 else None)
+            if labels[i1] or labels[i2]: ax.set_title(r'${} \times {}$'.format(labels[i1], labels[i2]))
+            ax.set_xscale(xscale)
+            ax.set_yscale(yscale)
+            ax.grid(True)
+            if label and i1 == i2 == 0: lax[i1][i2].legend()
+
+        fig.tight_layout()
+        fig.subplots_adjust(hspace=0.35, wspace=0.25)
+        return fig
 
 
 class _GaussianLikelihoodUpdateHelper(object):

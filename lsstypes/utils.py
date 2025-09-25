@@ -219,7 +219,7 @@ def plot_matrix(matrix, x1=None, x2=None, xlabel1=None, xlabel2=None, barlabel=N
             if j > 0 or x2[j] is None: ax.xaxis.set_visible(False)
             if i == 0 and xlabel2[j]: ax.set_ylabel(xlabel2[j], fontsize=labelsize)
             ax.tick_params()
-            if label1[i] is not None or label2[j] is not None:
+            if label1[i] or label2[j]:
                 text = '{}\nx {}'.format(label1[i], label2[j])
                 ax.text(0.05, 0.95, text, horizontalalignment='left', verticalalignment='top',\
                         transform=ax.transAxes, color='black')
@@ -230,3 +230,13 @@ def plot_matrix(matrix, x1=None, x2=None, xlabel1=None, xlabel2=None, barlabel=N
     cbar = fig.colorbar(mesh, cax=cbar_ax)
     if barlabel: cbar.set_label(barlabel, rotation=90)
     return fig
+
+
+def my_ones_like(x, dtype=None):
+    # JAX-friendly ones_like
+    return np.ones(x.shape, dtype=dtype if dtype is not None else x.dtype)
+
+
+def my_zeros_like(x, dtype=None):
+    # JAX-friendly zeros_like
+    return np.zeros(x.shape, dtype=dtype if dtype is not None else x.dtype)

@@ -1,6 +1,7 @@
 import numpy as np
 
 from .types import Mesh2SpectrumPole, Mesh2SpectrumPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
+from .utils import my_ones_like
 
 
 def from_pypower(power):
@@ -22,7 +23,7 @@ def from_pypower(power):
     for ill, ell in enumerate(ells):
         k_edges = np.column_stack([power.edges[0][:-1], power.edges[0][1:]])
         k = power.k
-        ones = np.ones_like(power.power_nonorm[ill])
+        ones = my_ones_like(power.power_nonorm[ill])
         num_raw = power.power[ill] * power.wnorm + (ell == 0) * power.shotnoise_nonorm
         poles.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=num_raw,
                                        num_shotnoise=power.shotnoise_nonorm * ones * (ell == 0),
@@ -61,7 +62,7 @@ def from_pycorr(correlation):
         meta = {name: getattr(count, name) for name in ['size1', 'size2']}
         coords = {coord_names[axis]: count.sepavg(axis=axis) for axis in range(count.ndim)}
         edges = {f'{coord_names[axis]}_edges': np.column_stack([count.edges[axis][:-1], count.edges[axis][1:]]) for axis in range(count.ndim)}
-        return Count2(counts=count.wcounts, norm=np.ones_like(count.wcounts) * count.wnorm, **coords, **edges, coords=coord_names, meta=meta)
+        return Count2(counts=count.wcounts, norm=my_ones_like(count.wcounts) * count.wnorm, **coords, **edges, coords=coord_names, meta=meta)
 
     for count_name in correlation.count_names:
         count = getattr(correlation, count_name)

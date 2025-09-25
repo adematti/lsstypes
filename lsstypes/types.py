@@ -1,7 +1,7 @@
 import numpy as np
 
-from .base import ObservableLeaf, ObservableTree, LeafLikeObservableTree, WindowMatrix, CovarianceMatrix, register_type
-from .utils import plotter
+from .base import ObservableLeaf, ObservableTree, LeafLikeObservableTree, WindowMatrix, CovarianceMatrix, register_type, _edges_names, _check_data_names
+from .utils import plotter, my_ones_like, my_zeros_like
 
 
 @register_type
@@ -36,9 +36,9 @@ class Mesh2SpectrumPole(ObservableLeaf):
         kw = dict(k=k, k_edges=k_edges)
         if k_edges is None: kw.pop('k_edges')
         self.__pre_init__(**kw, coords=['k'], attrs=attrs)
-        if num_shotnoise is None: num_shotnoise = np.zeros_like(num_raw)
-        if norm is None: norm = np.ones_like(num_raw)
-        if nmodes is None: nmodes = np.ones_like(num_raw, dtype='i4')
+        if num_shotnoise is None: num_shotnoise = my_zeros_like(num_raw)
+        if norm is None: norm = my_ones_like(num_raw)
+        if nmodes is None: nmodes = my_ones_like(num_raw, dtype='i4')
         self._values_names = ['value', 'num_shotnoise', 'norm', 'nmodes']
         for name in list(kwargs):
             if name in self._values_names: pass
@@ -49,14 +49,18 @@ class Mesh2SpectrumPole(ObservableLeaf):
             self._meta['ell'] = ell
 
     def _update(self, **kwargs):
-        for name in list(kwargs):
-            if name in ['k', 'k_edges'] + self._values_names:
-                self._data[name] = kwargs.pop(name)
-        for name in list(kwargs):
-            if name in ['num_raw']:
-                self._data['value'] = (kwargs.pop(name) - self.num_shotnoise) / self.norm
-        if kwargs:
-            raise ValueError(f'{kwargs} unknown')
+        require_recompute = ['num_raw', 'num_shotnoise', 'norm']
+        if set(kwargs) & set(require_recompute):
+            if 'value' in self._data:
+                self._data['num_raw'] = self._data.pop('value') * self._data['norm'] + self._data['num_shotnoise']
+            self._data.update(kwargs)
+            if 'value' not in self._data:
+                self._data['value'] = (self._data.pop('num_raw') - self._data['num_shotnoise']) / self._data['norm']
+        else:
+            self._data.update(kwargs)
+        _check_data_names(self)
+        if 'norm' in kwargs:
+            self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
 
     def _plabel(self, name):
         if name == 'k':
@@ -79,6 +83,23 @@ class Mesh2SpectrumPole(ObservableLeaf):
         if name in ['nmodes']:
             return None  # keep the first nmodes
         return [1] * len(observables)  # just sum
+
+    def values(self, name=None):
+        """
+        Get value array(s).
+
+        Parameters
+        ----------
+        name : str, optional
+            Name of value.
+
+        Returns
+        -------
+        values : array or dict
+        """
+        if name is not None and name == 'shotnoise':
+            return self.num_shotnoise / self.norm
+        return super().values(name=name)
 
     @plotter
     def plot(self, fig=None, **kwargs):
@@ -172,6 +193,388 @@ class Mesh2SpectrumPoles(ObservableTree):
         return fig
 
 
+
+@register_type
+class Mesh2CorrelationPole(ObservableLeaf):
+    r"""
+    Container for a correlation function multipole :math:`\xi_\ell(s)`.
+
+    Stores the binned correlation function for a given multipole order :math:`\ell`, including normalization and number of modes.
+
+    Parameters
+    ----------
+    s : array-like
+        Bin centers for separation :math:`s`.
+    s_edges : array-like
+        Bin edges for separation :math:`s`.
+    num_raw : array-like
+        Raw power spectrum measurements.
+    num_shotnoise : array-like, optional
+        Shot noise contribution (default: zeros).
+    norm : array-like, optional
+        Normalization factor (default: ones).
+    nmodes : array-like, optional
+        Number of modes per bin (default: ones).
+    ell : int, optional
+        Multipole order :math:`\ell`.
+    attrs : dict, optional
+        Additional attributes.
+    """
+    _name = 'mesh2correlationpole'
+
+    def __init__(self, s=None, s_edges=None, num_raw=None, num_shotnoise=None, norm=None, nmodes=None, ell=None, attrs=None, **kwargs):
+        kw = dict(s=s, s_edges=s_edges)
+        if s_edges is None: kw.pop('s_edges')
+        self.__pre_init__(**kw, coords=['s'], attrs=attrs)
+        if num_shotnoise is None: num_shotnoise = my_zeros_like(num_raw)
+        if norm is None: norm = my_ones_like(num_raw)
+        if nmodes is None: nmodes = my_ones_like(num_raw, dtype='i4')
+        self._values_names = ['value', 'num_shotnoise', 'norm', 'nmodes']
+        for name in list(kwargs):
+            if name in self._values_names: pass
+            elif name in ['volume']: self._values_names.append(name)
+            else: raise ValueError('{name} not unknown')
+        self._update(num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes, **kwargs)
+        if ell is not None:
+            self._meta['ell'] = ell
+
+    def _update(self, **kwargs):
+        require_recompute = ['num_raw', 'num_shotnoise', 'norm']
+        if set(kwargs) & set(require_recompute):
+            if 'value' in self._data:
+                self._data['num_raw'] = self._data.pop('value') * self._data['norm'] + self._data['num_shotnoise']
+            self._data.update(kwargs)
+            if 'value' not in self._data:
+                self._data['value'] = (self._data.pop('num_raw') - self._data['num_shotnoise']) / self._data['norm']
+        else:
+            self._data.update(kwargs)
+        _check_data_names(self)
+        if 'norm' in kwargs:
+            self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
+
+    def _binweight(self, name=None):
+        # weight, normalized
+        if name == 'nmodes':
+            return False, False
+        return self.nmodes, True
+
+    @classmethod
+    def _sumweight(cls, observables, name=None):
+        if name is None or name in ['value']:
+            s = sum(observable.norm for observable in observables)
+            return [observable.norm / s for observable in observables]
+        if name in ['nmodes']:
+            return [1. / len(observables)] * len(observables)
+        return [1] * len(observables)  # just sum
+
+    def _plabel(self, name):
+        if name == 's':
+            return r'$s$ [$\mathrm{Mpc}/h$]'
+        if name == 'value':
+            return r'$\xi_\ell(s)$'
+        return None
+
+    def values(self, name=None):
+        """
+        Get value array(s).
+
+        Parameters
+        ----------
+        name : str, optional
+            Name of value.
+
+        Returns
+        -------
+        values : array or dict
+        """
+        if name is not None and name == 'shotnoise':
+            return self.num_shotnoise / self.norm
+        return super().values(name=name)
+
+    @plotter
+    def plot(self, fig=None, **kwargs):
+        r"""
+        Plot a correlation function multipole.
+
+        Parameters
+        ----------
+        fig : matplotlib.figure.Figure, default=None
+            Optionally, a figure with at least 1 axis.
+        fn : str, Path, default=None
+            Optionally, path where to save figure.
+            If not provided, figure is not saved.
+        kw_save : dict, default=None
+            Optionally, arguments for :meth:`matplotlib.figure.Figure.savefig`.
+        show : bool, default=False
+            If ``True``, show figure.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            Figure object.
+        """
+        from matplotlib import pyplot as plt
+        if fig is None:
+            fig, ax = plt.subplots()
+        else:
+            ax = fig.axes[0]
+        ax.plot(self.s, self.s**2 * self.value(), **kwargs)
+        ax.set_xlabel(self._plabel('s'))
+        ax.set_ylabel(r'$s^2 \xi_\ell(s)$ [$(\mathrm{Mpc}/h)^{2}$]')
+        return fig
+
+
+
+@register_type
+class Mesh2CorrelationPoles(ObservableTree):
+    r"""
+    Container for multiple correlation function multipoles :math:`\xi_\ell(s)`.
+
+    Stores a collection of `Mesh2CorrelationPole` objects for different multipole orders :math:`\ell`.
+
+    Parameters
+    ----------
+    poles : list of Mesh2CorrelationPole
+        List of correlation function multipole objects.
+    ells : list of int, optional
+        Multipole orders :math:`\ell` for each pole (default: inferred from `poles`).
+    attrs : dict, optional
+        Additional attributes.
+    """
+    _name = 'mesh2correlationpoles'
+
+    def __init__(self, poles, ells=None, attrs=None):
+        """Initialize correlattion function multipoles."""
+        if ells is None: ells = [pole.ell for pole in poles]
+        super().__init__(poles, ells=ells, attrs=attrs)
+
+    @plotter
+    def plot(self, fig=None):
+        r"""
+        Plot the correlattion function multipoles.
+
+        Parameters
+        ----------
+        fig : matplotlib.figure.Figure, default=None
+            Optionally, a figure with at least 1 axis.
+        fn : str, Path, default=None
+            Optionally, path where to save figure.
+            If not provided, figure is not saved.
+        kw_save : dict, default=None
+            Optionally, arguments for :meth:`matplotlib.figure.Figure.savefig`.
+        show : bool, default=False
+            If ``True``, show figure.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            Figure object.
+        """
+        from matplotlib import pyplot as plt
+        if fig is None:
+            fig, ax = plt.subplots()
+        else:
+            ax = fig.axes[0]
+        for ell in self.ells:
+            pole = self.get(ell)
+            pole.plot(fig=ax, label=rf'$\ell = {ell:d}$')
+        ax.legend(frameon=False)
+        return fig
+
+
+@register_type
+class Mesh3SpectrumPole(ObservableLeaf):
+    """
+    Container for a bispectrum multipole :math:`B_\ell(k)`.
+
+    Stores the binned bispectrum for a given multipole order :math:`\ell`, including shot noise, normalization, and mode counts.
+
+    Parameters
+    ----------
+    k : array-like
+        Bin centers for wavenumber :math:`k`.
+    k_edges : array-like
+        Bin edges for wavenumber :math:`k`.
+    num_raw : array-like
+        Raw power spectrum measurements.
+    num_shotnoise : array-like, optional
+        Shot noise contribution (default: zeros).
+    norm : array-like, optional
+        Normalization factor (default: ones).
+    nmodes : array-like, optional
+        Number of modes per bin (default: ones).
+    ell : tuple, int, optional
+        Multipole order :math:`\ell`.
+    attrs : dict, optional
+        Additional attributes.
+    """
+    _name = 'mesh3spectrumpole'
+
+    def __init__(self, k=None, k_edges=None, num_raw=None, num_shotnoise=None, norm=None, nmodes=None, ell=None, basis='', attrs=None):
+        kw = dict(k=k, k_edges=k_edges)
+        if k_edges is None: kw.pop('k_edges')
+        self.__pre_init__(**kw, coords=['k'], attrs=attrs)
+        if num_shotnoise is None: num_shotnoise = my_zeros_like(num_raw)
+        if norm is None: norm = my_ones_like(num_raw)
+        if nmodes is None: nmodes = my_ones_like(num_raw, dtype='i4')
+        self._values_names = ['value', 'num_shotnoise', 'norm', 'nmodes']
+        self._update(**kw, num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes)
+        if ell is not None:
+            self._meta['ell'] = ell
+        self._meta['basis'] = basis
+
+    def _update(self, **kwargs):
+        require_recompute = ['num_raw', 'num_shotnoise', 'norm']
+        if set(kwargs) & set(require_recompute):
+            if 'value' in self._data:
+                self._data['num_raw'] = self._data.pop('value') * self._data['norm'] + self._data['num_shotnoise']
+            self._data.update(kwargs)
+            if 'value' not in self._data:
+                self._data['value'] = (self._data.pop('num_raw') - self._data['num_shotnoise']) / self._data['norm']
+        else:
+            self._data.update(kwargs)
+        _check_data_names(self)
+        if 'norm' in kwargs:
+            self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
+
+    def _plabel(self, name):
+        if name == 'k':
+            if 'scoccimarro' in self.basis:
+                return r'$k_1, k_2, k_3$ [$h/\mathrm{Mpc}$]'
+            return r'$k_1, k_2$ [$h/\mathrm{Mpc}$]'
+        if name == 'value':
+            if 'scoccimarro' in self.basis:
+                return r'$B_{\ell_3}(k_3)$ [$(\mathrm{Mpc}/h)^{6}$]'
+            return r'$B_{\ell_1, \ell_2, \ell_3}(k_1, k_2)$ [$(\mathrm{Mpc}/h)^{6}$]'
+        return None
+
+    def _binweight(self, name=None):
+        # weight, normalized
+        if name == 'nmodes':
+            return False, False
+        return self.nmodes, True
+
+    @classmethod
+    def _sumweight(cls, observables, name=None):
+        if name is None or name in ['value']:
+            s = sum(observable.norm for observable in observables)
+            return [observable.norm / s for observable in observables]
+        if name in ['nmodes']:
+            return None  # keep the first nmodes
+        return [1] * len(observables)  # just sum
+
+    def values(self, name=None):
+        """
+        Get value array(s).
+
+        Parameters
+        ----------
+        name : str, optional
+            Name of value.
+
+        Returns
+        -------
+        values : array or dict
+        """
+        if name is not None and name == 'shotnoise':
+            return self.num_shotnoise / self.norm
+        return super().values(name=name)
+
+    @plotter
+    def plot(self, fig=None, **kwargs):
+        r"""
+        Plot bispectrum multipole.
+
+        Parameters
+        ----------
+        fig : matplotlib.figure.Figure, default=None
+            Optionally, a figure with at least 1 axis.
+        fn : str, Path, default=None
+            Optionally, path where to save figure.
+            If not provided, figure is not saved.
+        kw_save : dict, default=None
+            Optionally, arguments for :meth:`matplotlib.figure.Figure.savefig`.
+        show : bool, default=False
+            If ``True``, show figure.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            Figure object.
+        """
+        from matplotlib import pyplot as plt
+        if fig is None:
+            fig, ax = plt.subplots()
+        else:
+            ax = fig.axes[0]
+        ax.plot(np.arange(len(self.k)), self.k.prod(axis=-1) * self.value(), **kwargs)
+        ax.set_xlabel('bin index')
+        if 'scoccimarro' in self.basis:
+            ax.set_ylabel(r'$k_1 k_2 k_3 B_{\ell_1 \ell_2 \ell_3}(k_1, k_2, k_3)$ [$(\mathrm{Mpc}/h)^{6}$]')
+        else:
+            ax.set_ylabel(r'$k_1 k_2 B_{\ell_1 \ell_2 \ell_3}(k_1, k_2)$ [$(\mathrm{Mpc}/h)^{4}$]')
+        return fig
+
+
+@register_type
+class Mesh3SpectrumPoles(ObservableTree):
+    """
+    Container for multiple bispectrum multipoles :math:`B_\ell(k)`.
+
+    Stores a collection of `Mesh3SpectrumPole` objects for different multipole orders :math:`\ell`, allowing joint analysis and plotting.
+
+    Parameters
+    ----------
+    poles : list of Mesh3SpectrumPole
+        List of bispectrum multipole objects.
+
+    ells : list of int or tuples, optional
+        Multipole orders :math:`\ell` for each pole (default: inferred from `poles`).
+
+    attrs : dict, optional
+        Additional attributes.
+    """
+    _name = 'mesh3spectrumpoles'
+
+    def __init__(self, poles, ells=None, attrs=None):
+        """Initialize bispectrum multipoles."""
+        if ells is None: ells = [pole.ell for pole in poles]
+        super().__init__(poles, ells=ells, attrs=attrs)
+
+    @plotter
+    def plot(self, fig=None):
+        r"""
+        Plot the bispectrum multipoles.
+
+        Parameters
+        ----------
+        fig : matplotlib.figure.Figure, default=None
+            Optionally, a figure with at least 1 axis.
+        fn : str, Path, default=None
+            Optionally, path where to save figure.
+            If not provided, figure is not saved.
+        kw_save : dict, default=None
+            Optionally, arguments for :meth:`matplotlib.figure.Figure.savefig`.
+        show : bool, default=False
+            If ``True``, show figure.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            Figure object.
+        """
+        from matplotlib import pyplot as plt
+        if fig is None:
+            fig, ax = plt.subplots()
+        else:
+            ax = fig.axes[0]
+        for ell in self.ells:
+            pole = self.get(ell)
+            pole.plot(fig=ax, label=rf'$\ell = {ell}$')
+        ax.legend(frameon=False)
+        return fig
+
+
 @register_type
 class Count2(ObservableLeaf):
     """
@@ -197,7 +600,8 @@ class Count2(ObservableLeaf):
 
     def __init__(self, counts=None, norm=None, attrs=None, **kwargs):
         self.__pre_init__(attrs=attrs, **kwargs)
-        if norm is None: norm = np.ones_like(counts)
+        if norm is None: norm = my_ones_like(counts)
+        self._values_names = ['normalized_counts', 'norm']
         self._update(counts=counts, norm=norm)
 
     def _binweight(self, name=None):
@@ -218,15 +622,18 @@ class Count2(ObservableLeaf):
     def _update(self, **kwargs):
         if 'value' in kwargs:
             kwargs['normalized_counts'] = kwargs.pop('value')
-        self._values_names = ['normalized_counts', 'norm']
-        for name in list(kwargs):
-            if name in self._coords_names + self._values_names:
-                self._data[name] = kwargs.pop(name)
-        for name in list(kwargs):
-            if name in ['counts']:
-                self._data['normalized_counts'] = kwargs.pop(name) / self.norm
-        if kwargs:
-            raise ValueError(f'Could not interpret arguments {kwargs}')
+        require_recompute = ['counts', 'norm']
+        if set(kwargs) & set(require_recompute):
+            if 'normalized_counts' in self._data:
+                self._data['counts'] = self._data.pop('normalized_counts') * self._data['norm']
+            self._data.update(kwargs)
+            if 'normalized_counts' not in self._data:
+                self._data['normalized_counts'] = self._data.pop('counts') / self._data['norm']
+        else:
+            self._data.update(kwargs)
+        _check_data_names(self)
+        if 'norm' in kwargs:
+            self._data['norm'] = self._data['norm'] * my_ones_like(self._data['normalized_counts'])
 
     def values(self, name=0):
         if name == 'counts':
@@ -864,7 +1271,7 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
             mask = []
             value, RR0, norm = (np.empty(estimator_value.shape[0], dtype=estimator_value.dtype) for i in range(3))
             for i_s, value_s in enumerate(estimator_value):
-                mask_s = np.ones_like(value_s, dtype='?')
+                mask_s = my_ones_like(value_s, dtype='?')
                 mask_s &= ~np.isnan(value_s)
                 mask.append(mask_s)
                 value[i_s] = np.sum(value_s[mask_s] * legendre[mask_s], axis=-1) / np.sum(dmu[mask_s])
@@ -1059,8 +1466,8 @@ class Count2CorrelationPole(ObservableLeaf):
         kw = dict(s=s, s_edges=s_edges)
         if s_edges is None: kw.pop('s_edges')
         self.__pre_init__(**kw, coords=['s'], attrs=attrs)
-        if RR0 is None: RR0 = np.ones_like(value)
-        if norm is None: norm = np.ones_like(value)
+        if RR0 is None: RR0 = my_ones_like(value)
+        if norm is None: norm = my_ones_like(value)
         self._values_names = ['value', 'norm', 'RR0']
         for name in list(kwargs):
             if name in self._values_names: pass
@@ -1209,8 +1616,8 @@ class Count2CorrelationWedge(ObservableLeaf):
     _name = 'count2correlationwedge'
 
     def __init__(self, s=None, s_edges=None, mu_edges=None, value=None, RR0=None, norm=None, attrs=None):
-        if RR0 is None: RR0 = np.ones_like(value)
-        if norm is None: norm = np.ones_like(value)
+        if RR0 is None: RR0 = my_ones_like(value)
+        if norm is None: norm = my_ones_like(value)
         super().__init__(s=s, s_edges=s_edges, value=value, RR0=RR0, norm=norm, coords=['s'], attrs=attrs)
         if mu_edges is not None:
             mu_edges = np.array(mu_edges)
@@ -1355,8 +1762,8 @@ class Count2CorrelationWp(ObservableLeaf):
     _name = 'count2correlationwp'
 
     def __init__(self, rp=None, rp_edges=None, pi_edges=None, value=None, RR0=None, norm=None, attrs=None):
-        if RR0 is None: RR0 = np.ones_like(value)
-        if norm is None: norm = np.ones_like(value)
+        if RR0 is None: RR0 = my_ones_like(value)
+        if norm is None: norm = my_ones_like(value)
         super().__init__(rp=rp, rp_edges=rp_edges, value=value, RR0=RR0, norm=norm, coords=['rp'], attrs=attrs)
         if pi_edges is not None:
             pi_edges = np.array(pi_edges)

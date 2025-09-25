@@ -6,7 +6,7 @@ import numpy as np
 
 import lsstypes as types
 from lsstypes import ObservableLeaf, ObservableTree, read, write
-from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
+from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole, Mesh3SpectrumPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
 from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood
 
 
@@ -63,6 +63,8 @@ def test_tree():
     assert np.allclose(DD.mu, RR.mu)
     tree2 = tree.clone(value=np.zeros(tree.size))
     assert np.allclose(tree2.value(), 0.)
+
+    DD.concatenate([DD] * 3)
 
     k = np.linspace(0., 0.2, 21)
     spectrum = rng.uniform(size=k.size)
@@ -174,7 +176,7 @@ def test_matrix(show=False):
     matrix2 = winmat.at.theory.select(k=slice(0, None, 2))
     assert np.allclose(matrix2.value().sum(axis=-1), winmat.value().sum(axis=-1))
     assert matrix2.shape[1] == winmat.shape[1] // 2
-    winmat.plot(show=False)
+    winmat.plot(show=show)
 
     assert winmat.dot(winmat.theory).shape == (winmat.shape[0],)
     assert winmat.dot(winmat.theory, return_type=None).labels() == winmat.observable.labels()
@@ -199,11 +201,16 @@ def test_matrix(show=False):
         assert matrix2.shape[0] == matrix.shape[0] * 2 // 3
 
     test(winmat)
+    winmat.plot_slice(indices=2, show=show)
+
     value = rng.uniform(0., 1., size=(40 * 3, 40 * 3))
     covmat = CovarianceMatrix(value=value, observable=observable)
+
     assert covmat.std().size == covmat.shape[0]
     assert covmat.corrcoef().shape == covmat.shape
     covmat.plot(show=show)
+    covmat.plot_diag(show=show)
+    covmat.plot_slice(indices=2, show=True)
     test(covmat)
 
     covmat = types.cov([get_spectrum(size=40, seed=seed) for seed in range(100)])
@@ -270,6 +277,45 @@ def test_types(show=False):
             spectrum.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
         return Mesh2SpectrumPoles(spectrum, ells=ells)
 
+    def get_bispectrum(seed=42, basis='sugiyama'):
+        ells = [0, 2]
+        rng = np.random.RandomState(seed=seed)
+
+        assert basis in ['sugiyama', 'sugiyama-diagonal', 'scoccimarro', 'scoccimarro-equilateral']
+        if 'scoccimarro' in basis: ndim = 3
+        else: ndim = 2
+
+        spectrum = []
+        for ell in ells:
+            uedges = np.linspace(0., 0.2, 41)
+            uedges = [np.column_stack([uedges[:-1], uedges[1:]])] * ndim
+            k = [np.mean(uedge, axis=-1) for uedge in uedges]
+            nmodes1d = [np.ones(uedge.shape[0], dtype='i') for uedge in uedges]
+
+            def _product(array):
+                if not isinstance(array, (tuple, list)):
+                    array = [array] * ndim
+                if 'diagonal' in basis or 'equilateral' in basis:
+                    grid = [np.array(array[0])] * ndim
+                else:
+                    grid = np.meshgrid(*array, sparse=False, indexing='ij')
+                return np.column_stack([tmp.ravel() for tmp in grid])
+
+            def get_order_mask(edges):
+                xmid = _product([np.mean(edge, axis=-1) for edge in edges])
+                mask = True
+                for i in range(xmid.shape[1] - 1): mask &= xmid[:, i] <= xmid[:, i + 1]  # select k1 <= k2 <= k3...
+                return mask
+
+            mask = get_order_mask(uedges)
+            # of shape (nbins, ndim, 2)
+            k_edges = np.concatenate([_product([edge[..., 0] for edge in uedges])[..., None], _product([edge[..., 1] for edge in uedges])[..., None]], axis=-1)[mask]
+            k = _product(k)[mask]
+            nmodes = np.prod(_product(nmodes1d)[mask], axis=-1)
+            k = np.mean(k_edges, axis=-1)
+            spectrum.append(Mesh3SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.shape[0])))
+        return Mesh3SpectrumPoles(spectrum, ells=ells)
+
     def get_count(mode='smu', seed=42):
         rng = np.random.RandomState(seed=seed)
         if mode == 'smu':
@@ -300,6 +346,17 @@ def test_types(show=False):
 
         counts = {label: get_count_jk(seed=seed + i) for i, label in enumerate(['DD', 'DR', 'RD', 'RR'])}
         return Count2JackknifeCorrelation(**counts)
+
+    for basis in ['sugiyama', 'sugiyama-diagonal', 'scoccimarro', 'scoccimarro-equilateral']:
+        spectrum = get_bispectrum(basis=basis)
+        spectrum.plot(show=show)
+        spectrum2 = spectrum.select(k=slice(0, None, 2))
+        spectrum2 = spectrum.select(k=(0., 0.15))
+        spectrum2 = spectrum.select(k=[(0., 0.1), (0., 0.15)])
+        fn = test_dir / 'spectrum.h5'
+        spectrum.write(fn)
+        spectrum2 = read(fn)
+        assert spectrum2 == spectrum
 
     spectrum = get_spectrum()
     spectrum.plot(show=show)
