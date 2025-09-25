@@ -3,6 +3,8 @@ from .base import WindowMatrix, CovarianceMatrix, GaussianLikelihood
 from .types import (Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh2CorrelationPole, Mesh2CorrelationPoles, Mesh3SpectrumPole, Mesh3SpectrumPoles,
 Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation, Count2CorrelationPole, Count2CorrelationPoles, Count2CorrelationWedge, Count2CorrelationWedges)
 
+__version__ = '1.0.0'
+
 
 def sum(observables):
     assert len(observables) >= 1

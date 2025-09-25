@@ -10,7 +10,7 @@ requires = [
 name = "lsstypes"
 authors = [{name = "Arnaud de Mattia"}]
 description = "Data types for (compressed) LSS measurements (and covariance and window matrices)"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = ["numpy"]
 readme = "README.md"
 requires-python = ">=3.10"
