@@ -30,7 +30,7 @@ class Mesh2SpectrumPole(ObservableLeaf):
     attrs : dict, optional
         Additional attributes.
     """
-    _name = 'mesh2spectrumpole'
+    _name = 'mesh2_spectrum_pole'
 
     def __init__(self, k=None, k_edges=None, num_raw=None, num_shotnoise=None, norm=None, nmodes=None, ell=None, attrs=None, **kwargs):
         kw = dict(k=k, k_edges=k_edges)
@@ -152,7 +152,7 @@ class Mesh2SpectrumPoles(ObservableTree):
     attrs : dict, optional
         Additional attributes.
     """
-    _name = 'mesh2spectrumpoles'
+    _name = 'mesh2_spectrum_poles'
 
     def __init__(self, poles, ells=None, attrs=None):
         """Initialize power spectrum multipoles."""
@@ -220,7 +220,7 @@ class Mesh2CorrelationPole(ObservableLeaf):
     attrs : dict, optional
         Additional attributes.
     """
-    _name = 'mesh2correlationpole'
+    _name = 'mesh2_correlation_pole'
 
     def __init__(self, s=None, s_edges=None, num_raw=None, num_shotnoise=None, norm=None, nmodes=None, ell=None, attrs=None, **kwargs):
         kw = dict(s=s, s_edges=s_edges)
@@ -341,7 +341,7 @@ class Mesh2CorrelationPoles(ObservableTree):
     attrs : dict, optional
         Additional attributes.
     """
-    _name = 'mesh2correlationpoles'
+    _name = 'mesh2_correlation_poles'
 
     def __init__(self, poles, ells=None, attrs=None):
         """Initialize correlattion function multipoles."""
@@ -408,7 +408,7 @@ class Mesh3SpectrumPole(ObservableLeaf):
     attrs : dict, optional
         Additional attributes.
     """
-    _name = 'mesh3spectrumpole'
+    _name = 'mesh3_spectrum_pole'
 
     def __init__(self, k=None, k_edges=None, num_raw=None, num_shotnoise=None, norm=None, nmodes=None, ell=None, basis='', attrs=None):
         kw = dict(k=k, k_edges=k_edges)
@@ -534,7 +534,7 @@ class Mesh3SpectrumPoles(ObservableTree):
     attrs : dict, optional
         Additional attributes.
     """
-    _name = 'mesh3spectrumpoles'
+    _name = 'mesh3_spectrum_poles'
 
     def __init__(self, poles, ells=None, attrs=None):
         """Initialize bispectrum multipoles."""
@@ -669,7 +669,7 @@ class Count2Jackknife(LeafLikeObservableTree):
     attrs : dict, optional
         Additional attributes.
     """
-    _name = 'count2jackknife'
+    _name = 'count2_jackknife'
 
     def __init__(self, ii_counts, ij_counts, ji_counts, realizations=None, attrs=None):
         if realizations is None:
@@ -861,7 +861,7 @@ class Count2Correlation(LeafLikeObservableTree):
         Pair count observables, e.g. DD, RR, DR, RD, DS, SD, SS.
     """
 
-    _name = 'count2correlation'
+    _name = 'count2_correlation'
 
     def __init__(self, estimator='landyszalay', attrs=None, **kwargs):
         with_shifted = any('S' in key for key in kwargs)
@@ -983,7 +983,7 @@ class Count2JackknifeCorrelation(Count2Correlation):
     kwargs : dict
         Pair count observables, e.g. DD, RR, DR, RD, DS, SD, SS.
     """
-    _name = 'count2jackknifecorrelation'
+    _name = 'count2_jackknife_correlation'
 
     @property
     def realizations(self):
@@ -1460,7 +1460,7 @@ class Count2CorrelationPole(ObservableLeaf):
     attrs : dict, optional
         Additional attributes.
     """
-    _name = 'count2correlationpole'
+    _name = 'count2_correlation_pole'
 
     def __init__(self, s=None, s_edges=None, value=None, RR0=None, norm=None, ell=None, attrs=None, **kwargs):
         kw = dict(s=s, s_edges=s_edges)
@@ -1548,7 +1548,7 @@ class Count2CorrelationPoles(ObservableTree):
     attrs : dict, optional
         Additional attributes.
     """
-    _name = 'count2correlationpoles'
+    _name = 'count2_correlation_poles'
 
     def __init__(self, poles, ells=None, attrs=None):
         """Initialize correlattion function multipoles."""
@@ -1613,7 +1613,7 @@ class Count2CorrelationWedge(ObservableLeaf):
     attrs : dict, optional
         Additional attributes.
     """
-    _name = 'count2correlationwedge'
+    _name = 'count2_correlation_wedge'
 
     def __init__(self, s=None, s_edges=None, mu_edges=None, value=None, RR0=None, norm=None, attrs=None):
         if RR0 is None: RR0 = my_ones_like(value)
@@ -1687,7 +1687,7 @@ class Count2CorrelationWedges(ObservableTree):
     attrs : dict, optional
         Additional attributes.
     """
-    _name = 'count2correlationwedges'
+    _name = 'count2_correlation_wedges'
 
     def __init__(self, wedges, attrs=None):
         """Initialize correlattion function multipoles."""
@@ -1759,7 +1759,7 @@ class Count2CorrelationWp(ObservableLeaf):
     attrs : dict, optional
         Additional attributes.
     """
-    _name = 'count2correlationwp'
+    _name = 'count2_correlation_wp'
 
     def __init__(self, rp=None, rp_edges=None, pi_edges=None, value=None, RR0=None, norm=None, attrs=None):
         if RR0 is None: RR0 = my_ones_like(value)
