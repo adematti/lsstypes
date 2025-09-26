@@ -450,10 +450,28 @@ def _edges_names(axes):
 
 
 def _check_data_names(self):
-    known_names = self._coords_names + self._values_names + _edges_names(self._coords_names)
-    for name in self._data:
-        if name not in known_names:
-            raise ValueError(f'{name} not unknown, expected one of {known_names}')
+    edges_names = _edges_names(self._coords_names)
+    known_names = set(self._coords_names + self._values_names + _edges_names(self._coords_names))
+    data_names = set(self._data)
+    unknown = data_names - known_names
+    if unknown:
+        raise ValueError(f'{unknown} not unknown, expected one of {known_names}')
+    missing = known_names - data_names - set(edges_names)
+    if missing:
+        raise ValueError(f'{missing} missing, expected all of {known_names - set(edges_names)}')
+
+
+def _check_data_shapes(self):
+    edges_names = _edges_names(self._coords_names)
+    for coord_name, edges_name in zip(self._coords_names, edges_names):
+        if edges_name in self._data:
+            eshape = self._data[edges_name].shape
+            cshape = self._data[coord_name].shape + (2,)
+            assert eshape == cshape, f'expected shape of {edges_name} is {cshape}, got {eshape}'
+    cshape = tuple(self._data[coord_name].shape[0] for coord_name in self._coords_names)
+    for name in self._values_names:
+        vshape = self._data[name].shape
+        assert vshape == cshape, f'expected shape of {name} is {cshape}, got {vshape}'
 
 
 @register_type
@@ -491,6 +509,8 @@ class ObservableLeaf(object):
         assert not any(k in self._forbidden_names for k in self._data), f'Cannot use {self._forbidden_names} as name for arrays'
         self._values_names = [name for name in self._data if name not in self._coords_names and name not in _edges_names(self._coords_names)]
         assert len(self._values_names), 'Provide at least one value array'
+        _check_data_names(self)
+        _check_data_shapes(self)
 
     def __getattr__(self, name):
         """Access values and coords by name."""
@@ -800,7 +820,6 @@ class ObservableLeaf(object):
         if 'value' in kwargs:
             kwargs[self._values_names[0]] = kwargs.pop('value')
         self._data.update(kwargs)
-        _check_data_names(self)
 
     def clone(self, **kwargs):
         """Copy and update data."""
@@ -809,6 +828,8 @@ class ObservableLeaf(object):
             if name in kwargs:
                 setattr(new, f'_{name}', dict(kwargs.pop(name) or {}))
         new._update(**kwargs)
+        _check_data_names(self)
+        _check_data_shapes(self)
         return new
 
     def select(self, center='mid_if_edges', **limits):
@@ -1652,20 +1673,22 @@ class ObservableTree(object):
             if name in kwargs:
                 setattr(new, f'_{name}', dict(kwargs.pop(name) or {}))
 
-        def _get_values(kwargs, ibranch, start, stop):
+        def _get_values(kwargs, ibranch, start, stop, shape=None):
             kw = dict()
             for name, value in kwargs.items():
                 if isinstance(value, (tuple, list)):
                     v = value[ibranch]
                 else:
                     v = value[start:stop]
+                    if shape is not None: v = v.reshape(shape)
                 if v is not None: kw[name] = v
             return kw
 
         start = 0
         for ibranch, branch in enumerate(new._branches):
             stop = start + branch.size
-            new._branches[ibranch] = branch.clone(**_get_values(kwargs, ibranch, start, stop))
+            shape = branch.shape if branch._is_leaf else None
+            new._branches[ibranch] = branch.clone(**_get_values(kwargs, ibranch, start, stop, shape=shape))
             start = stop
         return new
 

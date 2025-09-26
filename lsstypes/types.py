@@ -1,12 +1,12 @@
 import numpy as np
 
-from .base import ObservableLeaf, ObservableTree, LeafLikeObservableTree, WindowMatrix, CovarianceMatrix, register_type, _edges_names, _check_data_names
+from .base import ObservableLeaf, ObservableTree, LeafLikeObservableTree, WindowMatrix, CovarianceMatrix, register_type, _edges_names, _check_data_names, _check_data_shapes
 from .utils import plotter, my_ones_like, my_zeros_like
 
 
 @register_type
 class Mesh2SpectrumPole(ObservableLeaf):
-    """
+    r"""
     Container for a power spectrum multipole :math:`P_\ell(k)`.
 
     Stores the binned power spectrum for a given multipole order :math:`\ell`, including shot noise, normalization, and mode counts.
@@ -45,6 +45,8 @@ class Mesh2SpectrumPole(ObservableLeaf):
             elif name in ['volume']: self._values_names.append(name)
             else: raise ValueError('{name} not unknown')
         self._update(num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes, **kwargs)
+        _check_data_names(self)
+        _check_data_shapes(self)
         if ell is not None:
             self._meta['ell'] = ell
 
@@ -58,7 +60,6 @@ class Mesh2SpectrumPole(ObservableLeaf):
                 self._data['value'] = (self._data.pop('num_raw') - self._data['num_shotnoise']) / self._data['norm']
         else:
             self._data.update(kwargs)
-        _check_data_names(self)
         if 'norm' in kwargs:
             self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
 
@@ -136,7 +137,7 @@ class Mesh2SpectrumPole(ObservableLeaf):
 
 @register_type
 class Mesh2SpectrumPoles(ObservableTree):
-    """
+    r"""
     Container for multiple power spectrum multipoles :math:`P_\ell(k)`.
 
     Stores a collection of `Mesh2SpectrumPole` objects for different multipole orders :math:`\ell`, allowing joint analysis and plotting.
@@ -235,6 +236,8 @@ class Mesh2CorrelationPole(ObservableLeaf):
             elif name in ['volume']: self._values_names.append(name)
             else: raise ValueError('{name} not unknown')
         self._update(num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes, **kwargs)
+        _check_data_names(self)
+        _check_data_shapes(self)
         if ell is not None:
             self._meta['ell'] = ell
 
@@ -248,7 +251,6 @@ class Mesh2CorrelationPole(ObservableLeaf):
                 self._data['value'] = (self._data.pop('num_raw') - self._data['num_shotnoise']) / self._data['norm']
         else:
             self._data.update(kwargs)
-        _check_data_names(self)
         if 'norm' in kwargs:
             self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
 
@@ -384,7 +386,7 @@ class Mesh2CorrelationPoles(ObservableTree):
 
 @register_type
 class Mesh3SpectrumPole(ObservableLeaf):
-    """
+    r"""
     Container for a bispectrum multipole :math:`B_\ell(k)`.
 
     Stores the binned bispectrum for a given multipole order :math:`\ell`, including shot noise, normalization, and mode counts.
@@ -419,6 +421,8 @@ class Mesh3SpectrumPole(ObservableLeaf):
         if nmodes is None: nmodes = my_ones_like(num_raw, dtype='i4')
         self._values_names = ['value', 'num_shotnoise', 'norm', 'nmodes']
         self._update(**kw, num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes)
+        _check_data_names(self)
+        _check_data_shapes(self)
         if ell is not None:
             self._meta['ell'] = ell
         self._meta['basis'] = basis
@@ -433,7 +437,6 @@ class Mesh3SpectrumPole(ObservableLeaf):
                 self._data['value'] = (self._data.pop('num_raw') - self._data['num_shotnoise']) / self._data['norm']
         else:
             self._data.update(kwargs)
-        _check_data_names(self)
         if 'norm' in kwargs:
             self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
 
@@ -510,7 +513,7 @@ class Mesh3SpectrumPole(ObservableLeaf):
         ax.plot(np.arange(len(self.k)), self.k.prod(axis=-1) * self.value(), **kwargs)
         ax.set_xlabel('bin index')
         if 'scoccimarro' in self.basis:
-            ax.set_ylabel(r'$k_1 k_2 k_3 B_{\ell_1 \ell_2 \ell_3}(k_1, k_2, k_3)$ [$(\mathrm{Mpc}/h)^{6}$]')
+            ax.set_ylabel(r'$k_1 k_2 k_3 B_{\ell}(k_1, k_2, k_3)$ [$(\mathrm{Mpc}/h)^{6}$]')
         else:
             ax.set_ylabel(r'$k_1 k_2 B_{\ell_1 \ell_2 \ell_3}(k_1, k_2)$ [$(\mathrm{Mpc}/h)^{4}$]')
         return fig
@@ -603,6 +606,8 @@ class Count2(ObservableLeaf):
         if norm is None: norm = my_ones_like(counts)
         self._values_names = ['normalized_counts', 'norm']
         self._update(counts=counts, norm=norm)
+        _check_data_names(self)
+        _check_data_shapes(self)
 
     def _binweight(self, name=None):
         # weight, normalized
@@ -631,7 +636,6 @@ class Count2(ObservableLeaf):
                 self._data['normalized_counts'] = self._data.pop('counts') / self._data['norm']
         else:
             self._data.update(kwargs)
-        _check_data_names(self)
         if 'norm' in kwargs:
             self._data['norm'] = self._data['norm'] * my_ones_like(self._data['normalized_counts'])
 
@@ -1279,8 +1283,8 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
                 norm[i_s] = np.sum(estimator_norm[i_s, mask_s])
         else:
             value = np.sum(estimator_value * legendre, axis=-1) / np.sum(dmu)
-            RR0 = np.sum(estimator_RR.sum(axis=-1))
-            norm = np.sum(estimator_norm.sum(axis=-1))
+            RR0 = np.sum(estimator_RR, axis=-1)
+            norm = np.sum(estimator_norm, axis=-1)
 
         value = Count2CorrelationPole(value=value, s=estimator.coords('s'), s_edges=sedges, ell=ell, RR0=RR0, norm=norm, attrs=estimator.attrs)
         values.append(value)
@@ -1363,8 +1367,9 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
             mask.append(np.array(mask_ws, dtype='?'))
         else:
             value = np.sum(estimator_value[:, mask_w] * dmu[mask_w], axis=-1) / np.sum(dmu[mask_w])
-            RR0 = np.sum(estimator_RR.sum(axis=-1))
-            norm = np.sum(estimator_norm.sum(axis=-1))
+            RR0 = np.sum(estimator_RR, axis=-1)
+            norm = np.sum(estimator_norm, axis=-1)
+
         value = Count2CorrelationWedge(value=value, s=estimator.coords('s'), s_edges=sedges, mu_edges=wedge, RR0=RR0, norm=norm, attrs=estimator.attrs)
         values.append(value)
     if isscalar:
@@ -1463,19 +1468,16 @@ class Count2CorrelationPole(ObservableLeaf):
     _name = 'count2_correlation_pole'
 
     def __init__(self, s=None, s_edges=None, value=None, RR0=None, norm=None, ell=None, attrs=None, **kwargs):
-        kw = dict(s=s, s_edges=s_edges)
-        if s_edges is None: kw.pop('s_edges')
-        self.__pre_init__(**kw, coords=['s'], attrs=attrs)
         if RR0 is None: RR0 = my_ones_like(value)
         if norm is None: norm = my_ones_like(value)
-        self._values_names = ['value', 'norm', 'RR0']
-        for name in list(kwargs):
-            if name in self._values_names: pass
-            elif name in ['volume']: self._values_names.append(name)
-            else: raise ValueError('{name} not unknown')
-        self._update(value=value, norm=norm, RR0=RR0, **kwargs)
+        super().__init__(s=s, s_edges=s_edges, value=value, RR0=RR0, norm=norm, coords=['s'], attrs=attrs)
         if ell is not None:
             self._meta['ell'] = ell
+
+    def _update(self, **kwargs):
+        super()._update(**kwargs)
+        if 'norm' in kwargs:
+            self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
 
     def _binweight(self, name=None):
         # weight, normalized
@@ -1624,6 +1626,11 @@ class Count2CorrelationWedge(ObservableLeaf):
             assert mu_edges.size == 2
             self._meta['mu_edges'] = mu_edges
 
+    def _update(self, **kwargs):
+        super()._update(**kwargs)
+        if 'norm' in kwargs:
+            self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
+    
     def _binweight(self, name=None):
         # weight, normalized
         return Count2CorrelationPole._binweight(self, name=name)
@@ -1770,6 +1777,11 @@ class Count2CorrelationWp(ObservableLeaf):
             assert pi_edges.size == 2
             self._meta['pi_edges'] = pi_edges
 
+    def _update(self, **kwargs):
+        super()._update(**kwargs)
+        if 'norm' in kwargs:
+            self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
+    
     def _binweight(self, name=None):
         # weight, normalized
         return Count2CorrelationPole._binweight(self, name=name)
