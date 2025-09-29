@@ -45,8 +45,9 @@ def test_tree():
     assert len(leaf4.coords('s')) == 41
 
     tree = ObservableTree(leaves, keys=labels)
-    assert tree.labels(only='keys') == ['keys']
-    assert tree.labels() == [{'keys': 'DD'}, {'keys': 'DR'}, {'keys': 'RR'}]
+    assert tree.labels(return_type='keys') == ['keys']
+    assert tree.labels(return_type='unflatten') == {'keys': ['DD', 'DR', 'RR']}
+    assert tree.labels(return_type='flatten') == [{'keys': 'DD'}, {'keys': 'DR'}, {'keys': 'RR'}]
     assert len(tree.value()) == tree.size
     tree2 = tree.at(keys='DD').select(s=(10., 80.))
     assert tree2.get(keys='DD').shape != tree2.get(keys='DR').shape
@@ -70,9 +71,9 @@ def test_tree():
     spectrum = rng.uniform(size=k.size)
     leaf = ObservableLeaf(spectrum=spectrum, k=k, coords=['k'], attrs=dict(los='x'))
     tree2 = ObservableTree([tree, leaf], observable=['correlation', 'spectrum'])
-    assert tree2.labels(only='keys') == ['observable', 'keys']
-    assert tree2.labels(level=1) == [{'observable': 'correlation'}, {'observable': 'spectrum'}]
-    assert tree2.labels() == [{'observable': 'correlation', 'keys': 'DD'}, {'observable': 'correlation', 'keys': 'DR'}, {'observable': 'correlation', 'keys': 'RR'}, {'observable': 'spectrum'}]
+    assert tree2.labels(level=None, return_type='keys') == ['observable', 'keys']
+    assert tree2.labels(level=1, return_type='flatten') == [{'observable': 'correlation'}, {'observable': 'spectrum'}]
+    assert tree2.labels(level=None, return_type='flatten') == [{'observable': 'correlation', 'keys': 'DD'}, {'observable': 'correlation', 'keys': 'DR'}, {'observable': 'correlation', 'keys': 'RR'}, {'observable': 'spectrum'}]
 
     fn = test_dir / 'tree.h5'
     write(fn, tree2)
@@ -179,7 +180,7 @@ def test_matrix(show=False):
     winmat.plot(show=show)
 
     assert winmat.dot(winmat.theory).shape == (winmat.shape[0],)
-    assert winmat.dot(winmat.theory, return_type=None).labels() == winmat.observable.labels()
+    assert winmat.dot(winmat.theory, return_type=None).labels(level=None, return_type='flatten') == winmat.observable.labels(level=None, return_type='flatten')
 
     def test(matrix):
         fn = test_dir / 'matrix.h5'
@@ -210,7 +211,7 @@ def test_matrix(show=False):
     assert covmat.corrcoef().shape == covmat.shape
     covmat.plot(show=show)
     covmat.plot_diag(show=show)
-    covmat.plot_slice(indices=2, show=True)
+    covmat.plot_slice(indices=2, show=show)
     test(covmat)
 
     covmat = types.cov([get_spectrum(size=40, seed=seed) for seed in range(100)])
@@ -347,17 +348,6 @@ def test_types(show=False):
         counts = {label: get_count_jk(seed=seed + i) for i, label in enumerate(['DD', 'DR', 'RD', 'RR'])}
         return Count2JackknifeCorrelation(**counts)
 
-    for basis in ['sugiyama', 'sugiyama-diagonal', 'scoccimarro', 'scoccimarro-equilateral']:
-        spectrum = get_bispectrum(basis=basis)
-        spectrum.plot(show=show)
-        spectrum2 = spectrum.select(k=slice(0, None, 2))
-        spectrum2 = spectrum.select(k=(0., 0.15))
-        spectrum2 = spectrum.select(k=[(0., 0.1), (0., 0.15)])
-        fn = test_dir / 'spectrum.h5'
-        spectrum.write(fn)
-        spectrum2 = read(fn)
-        assert spectrum2 == spectrum
-
     spectrum = get_spectrum()
     spectrum.plot(show=show)
     spectrum2 = spectrum.select(k=slice(0, None, 2))
@@ -366,7 +356,7 @@ def test_types(show=False):
     assert np.allclose(spectrum.get(0).norm, 2)
     spectrum = types.mean([get_spectrum(seed=seed) for seed in range(2)])
     spectrum2 = types.join([get_spectrum().get(ells=[0, 2]), get_spectrum().get(ells=[4])])
-    assert spectrum2.labels() == [{'ells': 0}, {'ells': 2}, {'ells': 4}]
+    assert spectrum2.labels(return_type='flatten') == [{'ells': 0}, {'ells': 2}, {'ells': 4}]
 
     fn = test_dir / 'spectrum.txt'
     spectrum.write(fn)
@@ -384,6 +374,17 @@ def test_types(show=False):
     all_spectrum.write(fn)
     all_spectrum = read(fn)
     all_spectrum.get('z0').plot(show=show)
+
+    for basis in ['sugiyama', 'sugiyama-diagonal', 'scoccimarro', 'scoccimarro-equilateral']:
+        spectrum = get_bispectrum(basis=basis)
+        spectrum.plot(show=show)
+        spectrum2 = spectrum.select(k=slice(0, None, 2))
+        spectrum2 = spectrum.select(k=(0., 0.15))
+        spectrum2 = spectrum.select(k=[(0., 0.1), (0., 0.15)])
+        fn = test_dir / 'spectrum.h5'
+        spectrum.write(fn)
+        spectrum2 = read(fn)
+        assert spectrum2 == spectrum
 
     correlation = get_correlation()
     correlation2 = correlation.select(s=slice(0, None, 2))
@@ -433,7 +434,7 @@ def test_sparse():
 
 def test_external():
 
-    from lsstypes.external import from_pypower, from_pycorr
+    from lsstypes.external import from_pypower, from_pycorr, from_triumvirate
 
     test_dir = Path('_tests')
 
@@ -473,6 +474,37 @@ def test_external():
                                             randoms_positions1=randoms_positions1, randoms_weights1=randoms_weights1, randoms_samples1=randoms_samples1,
                                             engine='corrfunc', position_type='pos', nthreads=4)
 
+    def generate_triumvirate(return_type='bispctrum'):
+        from triumvirate.catalogue import ParticleCatalogue
+        from triumvirate.twopt import compute_powspec
+        from triumvirate.threept import compute_bispec
+        from triumvirate.parameters import ParameterSet
+        from triumvirate.logger import setup_logger
+
+        logger = setup_logger(20)
+        boxsize = np.array([500.] * 3)
+        meshsize = np.array([100] * 3)
+        data_positions1, data_weights1 = generate_catalogs(seed=42, boxsize=boxsize)
+        randoms_positions1, randoms_weights1 = generate_catalogs(seed=43, boxsize=boxsize)
+
+        data = ParticleCatalogue(*data_positions1.T, ws=data_weights1, nz=data_positions1.shape[0] / boxsize.prod())
+        randoms = ParticleCatalogue(*randoms_positions1.T, ws=randoms_weights1, nz=randoms_positions1.shape[0] / boxsize.prod())
+
+        edges = np.arange(0., 0.1, 0.02)
+        ell = (0, 0, 0)
+        paramset = dict(norm_convention='particle', form='full', degrees=dict(zip(['ell1', 'ell2', 'ELL'], ell)), wa_orders=dict(i=None, j=None),
+                        range=[edges[0], edges[-1]], num_bins=len(edges) - 1, binning='lin', assignment='cic', interlace=True, alignment='centre', padfactor=0.,
+                        boxsize=dict(zip('xyz', boxsize)), ngrid=dict(zip('xyz', meshsize)), verbose=20)
+        paramset = ParameterSet(param_dict=paramset)
+
+        if return_type == 'spectrum':
+            results = compute_powspec(data, randoms, paramset=paramset, logger=logger)
+        elif return_type == 'bispectrum':
+            results = compute_bispec(data, randoms, paramset=paramset, logger=logger)
+        else:
+            raise NotImplementedError
+        return results
+
     pypoles = generate_pypower()
     poles = from_pypower(pypoles)
     assert np.allclose(poles.value(), pypoles.power.ravel())
@@ -511,6 +543,18 @@ def test_external():
     assert np.allclose(corr.value(), pycorr.corr, equal_nan=True)
     xi = corr.project(ells=[0, 2, 4])
     assert np.allclose(xi.value(), np.ravel(pycorr(ells=[0, 2, 4], return_std=False)))
+
+    spec = generate_triumvirate(return_type='spectrum')
+    pole = from_triumvirate(spec)
+    fn = test_dir / 'pole.h5'
+    pole.write(fn)
+    read(fn)
+
+    spec = generate_triumvirate(return_type='bispectrum')
+    pole = from_triumvirate(spec)
+    fn = test_dir / 'pole.h5'
+    pole.write(fn)
+    read(fn)
 
 
 @contextmanager

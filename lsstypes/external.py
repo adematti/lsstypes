@@ -1,6 +1,6 @@
 import numpy as np
 
-from .types import Mesh2SpectrumPole, Mesh2SpectrumPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
+from .types import Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole, Mesh3SpectrumPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
 from .utils import my_ones_like
 
 
@@ -75,3 +75,55 @@ def from_pycorr(correlation):
             count = get_count(count)
         counts[count_name.replace('1', '').replace('2', '')] = count
     return (Count2JackknifeCorrelation if is_jackknife else Count2Correlation)(estimator=estimator, **counts)
+
+
+def from_triumvirate(spectrum, ells=None):
+    r"""
+    Convert a **triumvirate** object to :class:`Mesh2SpectrumPole` or :class:`Mesh3SpectrumPole` format.
+
+    Parameters
+    ----------
+    spectrum : dict
+        Input spectrum object.
+
+    Returns
+    -------
+    Mesh2SpectrumPole or Mesh3SpectrumPole
+    """
+    def get_edges(kbin):
+        edges = (kbin[:-1] + kbin[1:]) / 2.
+        edges = np.concatenate([[2 * edges[0] - edges[1]], edges, [2 * edges[-1] - edges[-2]]], axis=0)
+        return np.column_stack([edges[:-1], edges[1:]])
+
+    if ells is not None and isinstance(ells, (tuple, list)):
+        poles = []
+        for ill, ell in enumerate(ells):
+            poles.append(from_triumvirate(spectrum[ill], ell=ell))
+        if isinstance(poles[0], Mesh2SpectrumPole):
+            return Mesh2SpectrumPoles(poles)
+        if isinstance(poles[0], Mesh3SpectrumPole):
+            return Mesh3SpectrumPoles(poles)
+
+    kw = dict()
+    if ells is not None: kw.update(ell=ells)
+
+    if 'pk_raw' in spectrum:
+        k_edges = get_edges(spectrum[f'kbin'].ravel())
+        k = spectrum['keff']
+        nmodes = spectrum['nmodes'].ravel()
+        num_raw = spectrum['pk_raw'].ravel()
+        num_shotnoise = spectrum['pk_shot'].ravel()
+        return Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=num_raw, num_shotnoise=num_shotnoise, nmodes=nmodes)
+
+    if 'bk_raw' in spectrum:
+        k_edges = np.concatenate([get_edges(spectrum[f'k{axis + 1:d}_bin'].ravel())[:, None, :] for axis in range(2)], axis=1)
+        k = np.column_stack([spectrum[f'k{axis + 1:d}_eff'].ravel() for axis in range(2)])
+        nmodes = np.column_stack([spectrum[f'nmodes_{axis + 1:d}'].ravel() for axis in range(2)]).prod(axis=-1)
+        num_raw = spectrum['bk_raw'].ravel()
+        num_shotnoise = spectrum['bk_shot'].ravel()
+        basis = 'sugiyama'
+        if all(np.allclose(k_edges[:, axis, :], k_edges[:, 0, :]) for axis in range(k_edges.shape[1])):
+            basis = 'sugiyama-diagonal'
+        return Mesh3SpectrumPole(k=k, k_edges=k_edges, num_raw=num_raw, num_shotnoise=num_shotnoise, nmodes=nmodes, basis=basis)
+
+    raise NotImplementedError('input triumvirate object is not recognized')
