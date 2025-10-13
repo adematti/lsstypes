@@ -481,7 +481,7 @@ def test_external():
                                             randoms_positions1=randoms_positions1, randoms_weights1=randoms_weights1, randoms_samples1=randoms_samples1,
                                             engine='corrfunc', position_type='pos', nthreads=4)
 
-    def generate_triumvirate(return_type='bispctrum'):
+    def generate_triumvirate(return_type='bispectrum', ell=(0, 0, 0)):
         from triumvirate.catalogue import ParticleCatalogue
         from triumvirate.twopt import compute_powspec
         from triumvirate.threept import compute_bispec
@@ -498,7 +498,6 @@ def test_external():
         randoms = ParticleCatalogue(*randoms_positions1.T, ws=randoms_weights1, nz=randoms_positions1.shape[0] / boxsize.prod())
 
         edges = np.arange(0., 0.1, 0.02)
-        ell = (0, 0, 0)
         paramset = dict(norm_convention='particle', form='full', degrees=dict(zip(['ell1', 'ell2', 'ELL'], ell)), wa_orders=dict(i=None, j=None),
                         range=[edges[0], edges[-1]], num_bins=len(edges) - 1, binning='lin', assignment='cic', interlace=True, alignment='centre', padfactor=0.,
                         boxsize=dict(zip('xyz', boxsize)), ngrid=dict(zip('xyz', meshsize)), verbose=20)
@@ -552,13 +551,14 @@ def test_external():
     assert np.allclose(xi.value(), np.ravel(pycorr(ells=[0, 2, 4], return_std=False)))
 
     spec = generate_triumvirate(return_type='spectrum')
-    pole = from_triumvirate(spec)
+    pole = from_triumvirate(spec, ells=0)
     fn = test_dir / 'pole.h5'
     pole.write(fn)
     read(fn)
 
-    spec = generate_triumvirate(return_type='bispectrum')
-    pole = from_triumvirate(spec)
+    ells = [(0, 0, 0), (2, 0, 2)]
+    spec = [generate_triumvirate(return_type='bispectrum', ell=ell) for ell in ells]
+    pole = from_triumvirate(spec, ells=ells)
     fn = test_dir / 'pole.h5'
     pole.write(fn)
     read(fn)
@@ -653,6 +653,8 @@ def test_savetxt():
 
 if __name__ == '__main__':
 
+    test_external()
+    exit()
     test_tree()
     test_types()
     test_sparse()

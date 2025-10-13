@@ -83,22 +83,25 @@ def from_triumvirate(spectrum, ells=None):
 
     Parameters
     ----------
-    spectrum : dict
-        Input spectrum object.
+    spectrum : dict, list
+        Input spectrum pole, or list of poles.
+    ells : list, optional
+        If `spectrum` is a list of poles, corresponding :math:`\ell`.
 
     Returns
     -------
-    Mesh2SpectrumPole or Mesh3SpectrumPole
+    Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole or Mesh3SpectrumPoles
     """
     def get_edges(kbin):
         edges = (kbin[:-1] + kbin[1:]) / 2.
         edges = np.concatenate([[2 * edges[0] - edges[1]], edges, [2 * edges[-1] - edges[-2]]], axis=0)
         return np.column_stack([edges[:-1], edges[1:]])
 
-    if ells is not None and isinstance(ells, (tuple, list)):
+    if isinstance(spectrum, (tuple, list)):
+        assert ells is not None
         poles = []
         for ill, ell in enumerate(ells):
-            poles.append(from_triumvirate(spectrum[ill], ell=ell))
+            poles.append(from_triumvirate(spectrum[ill], ells=ell))
         if isinstance(poles[0], Mesh2SpectrumPole):
             return Mesh2SpectrumPoles(poles)
         if isinstance(poles[0], Mesh3SpectrumPole):
@@ -113,7 +116,7 @@ def from_triumvirate(spectrum, ells=None):
         nmodes = spectrum['nmodes'].ravel()
         num_raw = spectrum['pk_raw'].ravel()
         num_shotnoise = spectrum['pk_shot'].ravel()
-        return Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=num_raw, num_shotnoise=num_shotnoise, nmodes=nmodes)
+        return Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=num_raw, num_shotnoise=num_shotnoise, nmodes=nmodes, **kw)
 
     if 'bk_raw' in spectrum:
         k_edges = np.concatenate([get_edges(spectrum[f'k{axis + 1:d}_bin'].ravel())[:, None, :] for axis in range(2)], axis=1)
@@ -124,6 +127,6 @@ def from_triumvirate(spectrum, ells=None):
         basis = 'sugiyama'
         if all(np.allclose(k_edges[:, axis, :], k_edges[:, 0, :]) for axis in range(k_edges.shape[1])):
             basis = 'sugiyama-diagonal'
-        return Mesh3SpectrumPole(k=k, k_edges=k_edges, num_raw=num_raw, num_shotnoise=num_shotnoise, nmodes=nmodes, basis=basis)
+        return Mesh3SpectrumPole(k=k, k_edges=k_edges, num_raw=num_raw, num_shotnoise=num_shotnoise, nmodes=nmodes, basis=basis, **kw)
 
     raise NotImplementedError('input triumvirate object is not recognized')
