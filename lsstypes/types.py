@@ -346,14 +346,14 @@ class Mesh2CorrelationPoles(ObservableTree):
     _name = 'mesh2_correlation_poles'
 
     def __init__(self, poles, ells=None, attrs=None):
-        """Initialize correlattion function multipoles."""
+        """Initialize correlation function multipoles."""
         if ells is None: ells = [pole.ell for pole in poles]
         super().__init__(poles, ells=ells, attrs=attrs)
 
     @plotter
     def plot(self, fig=None):
         r"""
-        Plot the correlattion function multipoles.
+        Plot the correlation function multipoles.
 
         Parameters
         ----------
@@ -407,6 +407,8 @@ class Mesh3SpectrumPole(ObservableLeaf):
         Number of modes per bin (default: ones).
     ell : tuple, int, optional
         Multipole order :math:`\ell`.
+    basis: str, optional
+        Bispectrum basis (scoccimarro or sugiyama).
     attrs : dict, optional
         Additional attributes.
     """
@@ -447,7 +449,7 @@ class Mesh3SpectrumPole(ObservableLeaf):
             return r'$k_1, k_2$ [$h/\mathrm{Mpc}$]'
         if name == 'value':
             if 'scoccimarro' in self.basis:
-                return r'$B_{\ell_3}(k_3)$ [$(\mathrm{Mpc}/h)^{6}$]'
+                return r'$B_{\ell}(k_1, k_2, k_3)$ [$(\mathrm{Mpc}/h)^{6}$]'
             return r'$B_{\ell_1, \ell_2, \ell_3}(k_1, k_2)$ [$(\mathrm{Mpc}/h)^{6}$]'
         return None
 
@@ -486,7 +488,7 @@ class Mesh3SpectrumPole(ObservableLeaf):
     @plotter
     def plot(self, fig=None, **kwargs):
         r"""
-        Plot bispectrum multipole.
+        Plot a bispectrum multipole.
 
         Parameters
         ----------
@@ -548,6 +550,200 @@ class Mesh3SpectrumPoles(ObservableTree):
     def plot(self, fig=None):
         r"""
         Plot the bispectrum multipoles.
+
+        Parameters
+        ----------
+        fig : matplotlib.figure.Figure, default=None
+            Optionally, a figure with at least 1 axis.
+        fn : str, Path, default=None
+            Optionally, path where to save figure.
+            If not provided, figure is not saved.
+        kw_save : dict, default=None
+            Optionally, arguments for :meth:`matplotlib.figure.Figure.savefig`.
+        show : bool, default=False
+            If ``True``, show figure.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            Figure object.
+        """
+        from matplotlib import pyplot as plt
+        if fig is None:
+            fig, ax = plt.subplots()
+        else:
+            ax = fig.axes[0]
+        for ell in self.ells:
+            pole = self.get(ell)
+            pole.plot(fig=ax, label=rf'$\ell = {ell}$')
+        ax.legend(frameon=False)
+        return fig
+
+
+@register_type
+class Mesh3CorrelationPole(ObservableLeaf):
+    r"""
+    Container for a 3pcf multipole :math:`\zeta_{\ell_1, \ell_2, L}(s_1, s_2)`.
+
+    Stores the binned 3pcf for a given multipole order :math:`\ell`, including normalization and number of modes.
+
+    Parameters
+    ----------
+    s : array-like
+        Bin centers for separation :math:`s`.
+    s_edges : array-like
+        Bin edges for separation :math:`s`.
+    num_raw : array-like
+        Raw power spectrum measurements.
+    num_shotnoise : array-like, optional
+        Shot noise contribution (default: zeros).
+    norm : array-like, optional
+        Normalization factor (default: ones).
+    nmodes : array-like, optional
+        Number of modes per bin (default: ones).
+    basis: str, optional
+        Bispectrum basis (scoccimarro or sugiyama).
+    ell : int, optional
+        Multipole order :math:`\ell`.
+    attrs : dict, optional
+        Additional attributes.
+    """
+    _name = 'mesh3_correlation_pole'
+
+    def __init__(self, s=None, s_edges=None, num_raw=None, num_shotnoise=None, norm=None, nmodes=None, ell=None, basis='', attrs=None):
+        kw = dict(s=s, s_edges=s_edges)
+        if s_edges is None: kw.pop('s_edges')
+        self.__pre_init__(**kw, coords=['s'], attrs=attrs)
+        if num_shotnoise is None: num_shotnoise = my_zeros_like(num_raw)
+        if norm is None: norm = my_ones_like(num_raw)
+        if nmodes is None: nmodes = my_ones_like(num_raw, dtype='i4')
+        self._values_names = ['value', 'num_shotnoise', 'norm', 'nmodes']
+        self._update(num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes)
+        _check_data_names(self)
+        _check_data_shapes(self)
+        if ell is not None:
+            self._meta['ell'] = ell
+
+    def _update(self, **kwargs):
+        require_recompute = ['num_raw', 'num_shotnoise', 'norm']
+        if set(kwargs) & set(require_recompute):
+            if 'value' in self._data:
+                self._data['num_raw'] = self._data.pop('value') * self._data['norm'] + self._data['num_shotnoise']
+            self._data.update(kwargs)
+            if 'value' not in self._data:
+                self._data['value'] = (self._data.pop('num_raw') - self._data['num_shotnoise']) / self._data['norm']
+        else:
+            self._data.update(kwargs)
+        if 'norm' in kwargs:
+            self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
+
+    def _plabel(self, name):
+        if name == 's':
+            if 'scoccimarro' in self.basis:
+                return r'$s_1, s_2, s_3$ [$\mathrm{Mpc}/h$]'
+            return r'$s_1, s_2$ [$\mathrm{Mpc}/h$]'
+        if name == 'value':
+            if 'scoccimarro' in self.basis:
+                return r'$\zeta_{\ell}(s_1, s_2, s_3)$'
+            return r'$\zeta_{\ell_1, \ell_2, \ell_3}(s_1, s_2)$'
+        return None
+
+    def _binweight(self, name=None):
+        # weight, normalized
+        if name == 'nmodes':
+            return False, False
+        return self.nmodes, True
+
+    @classmethod
+    def _sumweight(cls, observables, name=None):
+        if name is None or name in ['value']:
+            s = sum(observable.norm for observable in observables)
+            return [observable.norm / s for observable in observables]
+        if name in ['nmodes']:
+            return [1. / len(observables)] * len(observables)
+        return [1] * len(observables)  # just sum
+
+    def values(self, name=None):
+        """
+        Get value array(s).
+
+        Parameters
+        ----------
+        name : str, optional
+            Name of value.
+
+        Returns
+        -------
+        values : array or dict
+        """
+        if name is not None and name == 'shotnoise':
+            return self.num_shotnoise / self.norm
+        return super().values(name=name)
+
+    @plotter
+    def plot(self, fig=None, **kwargs):
+        r"""
+        Plot a 3pcf multipole.
+
+        Parameters
+        ----------
+        fig : matplotlib.figure.Figure, default=None
+            Optionally, a figure with at least 1 axis.
+        fn : str, Path, default=None
+            Optionally, path where to save figure.
+            If not provided, figure is not saved.
+        kw_save : dict, default=None
+            Optionally, arguments for :meth:`matplotlib.figure.Figure.savefig`.
+        show : bool, default=False
+            If ``True``, show figure.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            Figure object.
+        """
+        from matplotlib import pyplot as plt
+        if fig is None:
+            fig, ax = plt.subplots()
+        else:
+            ax = fig.axes[0]
+        ax.plot(np.arange(len(self.s)), self.s.prod(axis=-1) * self.value(), **kwargs)
+        ax.set_xlabel('bin index')
+        if 'scoccimarro' in self.basis:
+            ax.set_ylabel(r'$s_1^2 s_2^2 s_3^2 \zeta_{\ell}(s_1, s_2, s_3)$ [$(\mathrm{Mpc}/h)^{6}$]')
+        else:
+            ax.set_ylabel(r'$s_1 s_2 \zeta_{\ell_1 \ell_2 \ell_3}(s_1, s_2)$ [$(\mathrm{Mpc}/h)^{4}$]')
+        return fig
+
+
+
+@register_type
+class Mesh3CorrelationPoles(ObservableTree):
+    r"""
+    Container for multiple 3pcf multipoles :math:`\zeta_{\ell_1, \ell_2, L}(s_1, s_2)`.
+
+    Stores a collection of `Mesh3CorrelationPole` objects for different multipole orders :math:`\ell`.
+
+    Parameters
+    ----------
+    poles : list of Mesh3CorrelationPole
+        List of 3pcf multipole objects.
+    ells : list of int, optional
+        Multipole orders :math:`\ell` for each pole (default: inferred from `poles`).
+    attrs : dict, optional
+        Additional attributes.
+    """
+    _name = 'mesh3_correlation_poles'
+
+    def __init__(self, poles, ells=None, attrs=None):
+        """Initialize 3pcf multipoles."""
+        if ells is None: ells = [pole.ell for pole in poles]
+        super().__init__(poles, ells=ells, attrs=attrs)
+
+    @plotter
+    def plot(self, fig=None):
+        r"""
+        Plot the 3pcf multipoles.
 
         Parameters
         ----------
@@ -1553,14 +1749,14 @@ class Count2CorrelationPoles(ObservableTree):
     _name = 'count2_correlation_poles'
 
     def __init__(self, poles, ells=None, attrs=None):
-        """Initialize correlattion function multipoles."""
+        """Initialize correlation function multipoles."""
         if ells is None: ells = [pole.ell for pole in poles]
         super().__init__(poles, ells=ells, attrs=attrs)
 
     @plotter
     def plot(self, fig=None):
         r"""
-        Plot the correlattion function multipoles.
+        Plot the correlation function multipoles.
 
         Parameters
         ----------
@@ -1630,7 +1826,7 @@ class Count2CorrelationWedge(ObservableLeaf):
         super()._update(**kwargs)
         if 'norm' in kwargs:
             self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
-    
+
     def _binweight(self, name=None):
         # weight, normalized
         return Count2CorrelationPole._binweight(self, name=name)
@@ -1697,7 +1893,7 @@ class Count2CorrelationWedges(ObservableTree):
     _name = 'count2_correlation_wedges'
 
     def __init__(self, wedges, attrs=None):
-        """Initialize correlattion function multipoles."""
+        """Initialize correlation function multipoles."""
         wedges_labels = [f'w{i + 1:d}' for i in range(len(wedges))]
         super().__init__(wedges, wedges=wedges_labels, attrs=attrs)
 
@@ -1711,7 +1907,7 @@ class Count2CorrelationWedges(ObservableTree):
     @plotter
     def plot(self, fig=None):
         r"""
-        Plot the correlattion function wedges.
+        Plot the correlation function wedges.
 
         Parameters
         ----------
@@ -1781,7 +1977,7 @@ class Count2CorrelationWp(ObservableLeaf):
         super()._update(**kwargs)
         if 'norm' in kwargs:
             self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
-    
+
     def _binweight(self, name=None):
         # weight, normalized
         return Count2CorrelationPole._binweight(self, name=name)

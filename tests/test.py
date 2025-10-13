@@ -44,6 +44,7 @@ def test_tree():
     leaf4 = leaf.at(s=(10., 80.)).select(s=(20., 70.), mu=(-0.8, 1.))
     assert len(leaf4.coords('s')) == 41
 
+
     tree = ObservableTree(leaves, keys=labels)
     assert tree.labels(return_type='keys') == ['keys']
     assert tree.labels(return_type='unflatten') == {'keys': ['DD', 'DR', 'RR']}
@@ -57,6 +58,12 @@ def test_tree():
     assert tree.get(['DD', 'RR']).get('DD') == tree.get('DD')
     assert isinstance(tree.get('DD'), ObservableLeaf)
     assert isinstance(tree.get(['DD']), ObservableTree)
+    tree2 = tree.clear()
+    assert tree2.labels(return_type='keys') == []
+    assert tree2.size == 0
+    for label, branch in zip(tree.labels(level=1), tree.flatten(level=1)):
+        tree2 = tree2.insert(branch, **label)
+    assert tree2 == tree
 
     RR = tree.get('RR').select(mu=(-0.8, 0.7))
     DD = tree.get('DD').match(RR)
