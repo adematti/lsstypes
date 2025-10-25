@@ -6,9 +6,9 @@ Mesh3CorrelationPole, Mesh3CorrelationPoles, Count2, Count2Jackknife, Count2Corr
 __version__ = '1.0.0'
 
 
-def sum(observables):
+def sum(observables, **kwargs):
     assert len(observables) >= 1
-    return observables[0].__class__.sum(observables)
+    return observables[0].__class__.sum(observables, **kwargs)
 
 
 def mean(observables):

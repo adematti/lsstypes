@@ -1,5 +1,6 @@
 import os
 import shutil
+from functools import partial
 
 from . import utils
 
@@ -470,7 +471,10 @@ def _check_data_shapes(self):
             assert eshape == cshape, f'expected shape of {edges_name} is {cshape}, got {eshape}'
     cshape = tuple(self._data[coord_name].shape[0] for coord_name in self._coords_names)
     for name in self._values_names:
-        vshape = self._data[name].shape
+        try:
+            vshape = self._data[name].shape
+        except AttributeError as exc:
+            raise AttributeError(f'{name} is not an array') from exc
         assert vshape == cshape, f'expected shape of {name} is {cshape}, got {vshape}'
 
 
@@ -675,12 +679,12 @@ class ObservableLeaf(object):
         if isinstance(name, tuple):
             weight, normalized = name
         else:
-            bw = getattr(self, '_binweight', None)
-            if bw is None:
+            binweight = getattr(self, '_binweight', None)
+            if binweight is None:
                 undefined_weight = True
                 weight, normalized = False, True
             else:
-                weight, normalized = bw(name=name)
+                weight, normalized = binweight(name=name)
 
         def _format_slice(lim, coords):
             if isinstance(lim, tuple):
@@ -961,19 +965,25 @@ class ObservableLeaf(object):
                 _weights = weights(observables, name)
                 if _weights is None: continue  # keep as is
                 divide = False
-            else:
+            elif name in new._values_names:
                 _weights = weights
                 divide = True
-            if name in new._coords_names: divide = True
+            else:  # coords or edges
+                _weights = [1] * len(observables)
+            if name not in new._values_names:  # coords or edges
+                divide = True
             assert len(_weights) == len(observables)
             new._data[name] = sum(weight * observable._data[name] for observable, weight in zip(observables, _weights))
             if divide: new._data[name] = new._data[name] / sum(_weights)
         return new
 
     @classmethod
-    def sum(cls, observables):
+    def sum(cls, observables, weights=None):
         """Sum multiple observables."""
-        return cls._average(observables, weights=getattr(cls, '_sumweight', None))
+        sumweight = getattr(cls, '_sumweight', None)
+        if sumweight is not None: sumweight = partial(sumweight, weights=weights)
+        else: sumweight = weights
+        return cls._average(observables, weights=sumweight)
 
     @classmethod
     def mean(cls, observables):
@@ -1980,9 +1990,9 @@ class ObservableTree(object):
         return self.__add__(other)
 
     @classmethod
-    def sum(cls, observables):
+    def sum(cls, observables, weights=None):
         """Sum multiple observables."""
-        return tree_map(lambda observables: observables[0].sum(observables), observables, level=1, is_leaf='input_not_leaf')
+        return tree_map(lambda observables: observables[0].sum(observables, weights=weights), observables, level=1, is_leaf='input_not_leaf')
 
     @classmethod
     def mean(cls, observables):
@@ -2346,9 +2356,12 @@ class LeafLikeObservableTree(ObservableTree):
         return tree_map(lambda observables: observables[0]._average(observables, weights=weights), observables, level=1)
 
     @classmethod
-    def sum(cls, observables):
+    def sum(cls, observables, weights=None):
         """Sum multiple observables."""
-        return cls._average(observables, weights=getattr(cls, '_sumweight', None))
+        sumweight = getattr(cls, '_sumweight', None)
+        if sumweight is not None: sumweight = partial(sumweight, weights=weights)
+        else: sumweight = weights
+        return cls._average(observables, weights=sumweight)
 
     @classmethod
     def mean(cls, observables):
@@ -2579,21 +2592,21 @@ class WindowMatrix(object):
         return self.__add__(other)
 
     @classmethod
-    def sum(cls, matrices):
+    def sum(cls, matrices, weights=None):
         """Sum multiple window matrices."""
         new = matrices[0].copy()
 
         def get_sumweight(leaves):
-            sw = getattr(leaves[0], '_sumweight', None)
+            sumweight = getattr(leaves[0], '_sumweight', None)
             weight = None
-            if sw is not None:
-                weight = sw(leaves)
+            if sumweight is not None:
+                weight = sumweight(leaves, weights=weights)
             if weight is None:
                 weight = [np.ones_like(leaves[0].value()) / len(leaves)] * len(leaves)
             return weight
 
         assert all(matrix.observable.labels(level=None, return_type='flatten') == new.observable.labels(level=None, return_type='flatten') for matrix in matrices[1:])
-        weights = map(get_sumweight, zip(*[tree_flatten(matrix.observable, level=None) for matrix in matrices]))
+        weights = list(map(get_sumweight, zip(*[tree_flatten(matrix.observable, level=None) for matrix in matrices])))
         weights = [np.concatenate(w, axis=0) for w in zip(*weights)]
         new._value = sum(weight[..., None] * matrix._value for matrix, weight in zip(matrices, weights))
         new._observable = matrices[0]._observable.sum([matrix.observable for matrix in matrices])
@@ -2678,7 +2691,7 @@ class WindowMatrix(object):
             def get_x(leaf):
                 xx = None
                 if len(leaf._coords_names) == 1:
-                    xx = leaf.coords(axis=leaf._coords_names[0])
+                    xx = leaf.coords(0)
                     if xx.ndim > 1: xx = None
                 if xx is None:
                     xx = np.arange(leaf.size)
@@ -2751,14 +2764,14 @@ class WindowMatrix(object):
             def get_x(leaf):
                 xx = None
                 if len(leaf._coords_names) == 1:
-                    xx = leaf.coords(axis=leaf._coords_names[0])
+                    xx = leaf.coords(0)
                     if xx.ndim > 1: xx = None
                 if xx is None:
                     xx = np.arange(leaf.size)
                 return xx
 
             def get_edges(leaf):
-                edges = leaf.edges(axis=leaf._coords_names[0])
+                edges = leaf.edges(0)
                 return edges
 
             if observable._is_leaf:
@@ -2985,7 +2998,7 @@ class CovarianceMatrix(object):
             def get_x(leaf):
                 xx = None
                 if len(leaf._coords_names) == 1:
-                    xx = leaf.coords(axis=leaf._coords_names[0])
+                    xx = leaf.coords(0)
                     if xx.ndim > 1: xx = None
                 if xx is None:
                     xx = np.arange(leaf.size)
@@ -3062,7 +3075,7 @@ class CovarianceMatrix(object):
             def get_x(leaf):
                 xx = None
                 if len(leaf._coords_names) == 1:
-                    xx = leaf.coords(axis=leaf._coords_names[0])
+                    xx = leaf.coords(0)
                     if xx.ndim > 1: xx = None
                 if xx is None:
                     xx = np.arange(leaf.size)
@@ -3152,7 +3165,7 @@ class CovarianceMatrix(object):
             def get_x(leaf):
                 xx = None
                 if len(leaf._coords_names) == 1:
-                    xx = leaf.coords(axis=leaf._coords_names[0])
+                    xx = leaf.coords(0)
                     if xx.ndim > 1: xx = None
                 if xx is None:
                     xx = np.arange(leaf.size)

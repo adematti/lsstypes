@@ -1,7 +1,13 @@
+import functools
+import operator
 import numpy as np
 
 from .base import ObservableLeaf, ObservableTree, LeafLikeObservableTree, WindowMatrix, CovarianceMatrix, register_type, _edges_names, _check_data_names, _check_data_shapes
+from .base import _edges_name
 from .utils import plotter, my_ones_like, my_zeros_like
+
+
+prod = functools.partial(functools.reduce, operator.mul)
 
 
 @register_type
@@ -43,7 +49,7 @@ class Mesh2SpectrumPole(ObservableLeaf):
         for name in list(kwargs):
             if name in self._values_names: pass
             elif name in ['volume']: self._values_names.append(name)
-            else: raise ValueError('{name} not unknown')
+            else: raise ValueError(f'{name} not unknown')
         self._update(num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes, **kwargs)
         _check_data_names(self)
         _check_data_shapes(self)
@@ -77,13 +83,22 @@ class Mesh2SpectrumPole(ObservableLeaf):
         return self.nmodes, True
 
     @classmethod
-    def _sumweight(cls, observables, name=None):
+    def _sumweight(cls, observables, name=None, weights=None):
+        input_weights = True
+        if weights is None:
+            weights = [observable.norm for observable in observables]
+            input_weights = False
         if name is None or name in ['value']:
-            s = sum(observable.norm for observable in observables)
-            return [observable.norm / s for observable in observables]
-        if name in ['nmodes']:
+            sumweights = sum(weights)
+            return [weight / sumweights for weight in weights]
+        if name in ['num_shotnoise', 'norm']:
+            if input_weights:
+                sumweights = sum(weights)
+                return [weight / sumweights for weight in weights]
+            return [1] * len(observables)  # just sum norm, num_shotnoise
+        if name in ['nmodes', 'volume'] + observables[0]._coords_names:
             return None  # keep the first nmodes
-        return [1] * len(observables)  # just sum
+        raise ValueError(f'{name} weights not implemented')
 
     def values(self, name=None):
         """
@@ -261,13 +276,8 @@ class Mesh2CorrelationPole(ObservableLeaf):
         return self.nmodes, True
 
     @classmethod
-    def _sumweight(cls, observables, name=None):
-        if name is None or name in ['value']:
-            s = sum(observable.norm for observable in observables)
-            return [observable.norm / s for observable in observables]
-        if name in ['nmodes']:
-            return [1. / len(observables)] * len(observables)
-        return [1] * len(observables)  # just sum
+    def _sumweight(cls, observables, name=None, weights=None):
+        return Mesh2SpectrumPole._sumweight(observables, name=name, weights=weights)
 
     def _plabel(self, name):
         if name == 's':
@@ -417,7 +427,13 @@ class Mesh3SpectrumPole(ObservableLeaf):
     def __init__(self, k=None, k_edges=None, num_raw=None, num_shotnoise=None, norm=None, nmodes=None, ell=None, basis='', attrs=None):
         kw = dict(k=k, k_edges=k_edges)
         if k_edges is None: kw.pop('k_edges')
-        self.__pre_init__(**kw, coords=['k'], attrs=attrs)
+        coords = ['k']
+        if isinstance(k, tuple):
+            kw = {f'k{idim + 1:d}': coord for idim, coord in enumerate(k)}
+            coords = list(kw)
+            if k_edges is not None:
+                kw.update({f'k{idim + 1:d}_edges': edge for idim, edge in enumerate(k_edges)})
+        self.__pre_init__(**kw, coords=coords, attrs=attrs)
         if num_shotnoise is None: num_shotnoise = my_zeros_like(num_raw)
         if norm is None: norm = my_ones_like(num_raw)
         if nmodes is None: nmodes = my_ones_like(num_raw, dtype='i4')
@@ -428,6 +444,63 @@ class Mesh3SpectrumPole(ObservableLeaf):
         if ell is not None:
             self._meta['ell'] = ell
         self._meta['basis'] = basis
+
+    @property
+    def is_raveled(self):
+        return len(self._coords_names) == 1
+
+    def unravel(self):
+        """Unravel the coordinate axis 'k' into 'k1', 'k2' (and 'k3')."""
+        assert self.is_raveled, 'pole must be raveled to be unraveled!'
+        new = self.copy()
+        index, inverse = [], []
+        for idim, mid in enumerate(self.coords(0, center='mid_if_edges').T):
+            _, idx, inv = np.unique(mid, return_index=True, return_inverse=True)
+            index.append(idx)
+            inverse.append(inv)
+        coords = new._data.pop(self._coords_names[0])
+        coords = [coords[idx, idim] for idim, idx in enumerate(index)]
+        new._coords_names = coords_names = [f'{self._coords_names[0]}{idim + 1:d}' for idim, coord in enumerate(coords)]
+        for name, coord in zip(coords_names, coords):
+            new._data[name] = coord
+        edges_name = _edges_name(self._coords_names[0])
+        if edges_name in self._data:
+            edges = new._data.pop(edges_name)
+            edges = [edges[idx, idim] for idim, idx in enumerate(index)]
+            for name, edge in zip(coords_names, edges):
+                new._data[_edges_name(name)] = edge
+        index = []
+        for idim, mid in enumerate(self.coords(0, center='mid_if_edges').T):
+            idx = np.searchsorted(new.coords(idim, center='mid_if_edges'), mid, side='left')
+            index.append(idx)
+        for name in self._values_names:
+            new._data[name] = np.zeros_like(self._data[name], shape=tuple(len(coord) for coord in coords))
+            new._data[name][tuple(inverse)] = self._data[name]
+        return new
+
+    def ravel(self):
+        """Ravel the coordinate axes into a single axis 'k'."""
+        assert not self.is_raveled, 'pole must be unraveled to be raveled!'
+        new = self.copy()
+        coords, edges = [], []
+        for axis in self._coords_names:
+            coords.append(new._data.pop(axis))
+            edges_name = _edges_name(axis)
+            if edges_name in new._data:
+                edges.append(new._data.pop(edges_name))
+
+        def product(*arrays):
+            arrays = np.meshgrid(*arrays, indexing='ij')
+            return np.column_stack([array.ravel() for array in arrays])
+
+        new._data[axis[:1]] = product(*coords)
+        if edges:
+            edges = [product(*[edge[..., i] for edge in edges]) for i in [0, 1]]
+            new._data[_edges_name(f'{axis[:1]}')] = np.concatenate([edge[..., None] for edge in edges], axis=-1)
+        new._coords_names = [axis[:1]]
+        for name in self._values_names:
+            new._data[name] = self._data[name].ravel()
+        return new
 
     def _update(self, **kwargs):
         require_recompute = ['num_raw', 'num_shotnoise', 'norm']
@@ -447,6 +520,8 @@ class Mesh3SpectrumPole(ObservableLeaf):
             if 'scoccimarro' in self.basis:
                 return r'$k_1, k_2, k_3$ [$h/\mathrm{Mpc}$]'
             return r'$k_1, k_2$ [$h/\mathrm{Mpc}$]'
+        if name in ['k1', 'k2', 'k3']:
+            return rf'$k_{{{name[-1]}}}$ [$h/\mathrm{{Mpc}}$]'
         if name == 'value':
             if 'scoccimarro' in self.basis:
                 return r'$B_{\ell}(k_1, k_2, k_3)$ [$(\mathrm{Mpc}/h)^{6}$]'
@@ -460,13 +535,8 @@ class Mesh3SpectrumPole(ObservableLeaf):
         return self.nmodes, True
 
     @classmethod
-    def _sumweight(cls, observables, name=None):
-        if name is None or name in ['value']:
-            s = sum(observable.norm for observable in observables)
-            return [observable.norm / s for observable in observables]
-        if name in ['nmodes']:
-            return None  # keep the first nmodes
-        return [1] * len(observables)  # just sum
+    def _sumweight(cls, observables, name=None, weights=None):
+        return Mesh2SpectrumPole._sumweight(observables, name=name, weights=weights)
 
     def values(self, name=None):
         """
@@ -512,12 +582,22 @@ class Mesh3SpectrumPole(ObservableLeaf):
             fig, ax = plt.subplots()
         else:
             ax = fig.axes[0]
-        ax.plot(np.arange(len(self.k)), self.k.prod(axis=-1) * self.value(), **kwargs)
-        ax.set_xlabel('bin index')
-        if 'scoccimarro' in self.basis:
-            ax.set_ylabel(r'$k_1 k_2 k_3 B_{\ell}(k_1, k_2, k_3)$ [$(\mathrm{Mpc}/h)^{6}$]')
+        if self.is_raveled:
+            coord = self.coords(0)
+            ax.plot(np.arange(len(coord)), coord.prod(axis=-1) * self.value(), **kwargs)
+            ax.set_xlabel('bin index')
+            if 'scoccimarro' in self.basis:
+                ax.set_ylabel(r'$k_1 k_2 k_3 B_{\ell}(k_1, k_2, k_3)$ [$(\mathrm{Mpc}/h)^{6}$]')
+            else:
+                ax.set_ylabel(r'$k_1 k_2 B_{\ell_1 \ell_2 \ell_3}(k_1, k_2)$ [$(\mathrm{Mpc}/h)^{4}$]')
         else:
-            ax.set_ylabel(r'$k_1 k_2 B_{\ell_1 \ell_2 \ell_3}(k_1, k_2)$ [$(\mathrm{Mpc}/h)^{4}$]')
+            coords = list(self.coords().values())
+            if len(coords) > 2:
+                raise NotImplementedError('Cannot plot 3D pole!')
+            value = prod(np.meshgrid(*coords, indexing='ij', sparse=True)) * self.value()
+            ax.pcolormesh(*coords, value.T, **kwargs)
+            ax.set_xlabel(self._plabel(self._coords_names[0]))
+            ax.set_ylabel(self._plabel(self._coords_names[1]))
         return fig
 
 
@@ -546,8 +626,14 @@ class Mesh3SpectrumPoles(ObservableTree):
         if ells is None: ells = [pole.ell for pole in poles]
         super().__init__(poles, ells=ells, attrs=attrs)
 
+    def ravel(self):
+        return self.map(lambda leaf: leaf.ravel())
+
+    def unravel(self):
+        return self.map(lambda leaf: leaf.unravel())
+
     @plotter
-    def plot(self, fig=None):
+    def plot(self, fig=None, **kwargs):
         r"""
         Plot the bispectrum multipoles.
 
@@ -569,14 +655,31 @@ class Mesh3SpectrumPoles(ObservableTree):
             Figure object.
         """
         from matplotlib import pyplot as plt
-        if fig is None:
-            fig, ax = plt.subplots()
+        if all(leaf.is_raveled for leaf in self):
+            if fig is None:
+                fig, ax = plt.subplots()
+            else:
+                ax = fig.axes[0]
+            for label in self.labels():
+                pole = self.get(**label)
+                pole.plot(fig=ax, label=rf'$\ell = {label["ells"]}$')
+            ax.legend(frameon=False)
         else:
-            ax = fig.axes[0]
-        for ell in self.ells:
-            pole = self.get(ell)
-            pole.plot(fig=ax, label=rf'$\ell = {ell}$')
-        ax.legend(frameon=False)
+            if fig is None:
+                n = len(self._branches)
+                fig, lax = plt.subplots(n, figsize=(4, 4 * n))
+            else:
+                lax = fig.axes
+            lax = np.ravel(lax)
+            values = [prod(pole.coords().values()) * pole.value() for pole in self]
+            vmin, vmax = min(value.min() for value in values), max(value.max() for value in values)
+            kwargs.setdefault('vmin', vmin)
+            kwargs.setdefault('vmax', vmax)
+            for i, label in enumerate(self.labels()):
+                pole = self.get(**label)
+                ax = lax[i]
+                ax.set_title(rf'$\ell = {label["ells"]}$')
+                pole.plot(fig=ax, **kwargs)
         return fig
 
 
@@ -613,7 +716,13 @@ class Mesh3CorrelationPole(ObservableLeaf):
     def __init__(self, s=None, s_edges=None, num_raw=None, num_shotnoise=None, norm=None, nmodes=None, ell=None, basis='', attrs=None):
         kw = dict(s=s, s_edges=s_edges)
         if s_edges is None: kw.pop('s_edges')
-        self.__pre_init__(**kw, coords=['s'], attrs=attrs)
+        coords = ['s']
+        if isinstance(s, tuple):
+            kw = {f's{idim + 1:d}': coord for idim, coord in enumerate(s)}
+            coords = list(kw)
+            if s_edges is not None:
+                kw.update({f's{idim + 1:d}_edges': edge for idim, edge in enumerate(s_edges)})
+        self.__pre_init__(**kw, coords=coords, attrs=attrs)
         if num_shotnoise is None: num_shotnoise = my_zeros_like(num_raw)
         if norm is None: norm = my_ones_like(num_raw)
         if nmodes is None: nmodes = my_ones_like(num_raw, dtype='i4')
@@ -623,6 +732,19 @@ class Mesh3CorrelationPole(ObservableLeaf):
         _check_data_shapes(self)
         if ell is not None:
             self._meta['ell'] = ell
+        self._meta['basis'] = basis
+
+    @property
+    def is_raveled(self):
+        return len(self._coords_names) == 1
+
+    def unravel(self):
+        """Unravel the coordinate axis 's' into 's1', 's2' (and 's3')."""
+        return Mesh3SpectrumPole.unravel(self)
+
+    def ravel(self):
+        """Ravel the coordinate axes into a single axis 's'."""
+        return Mesh3SpectrumPole.ravel(self)
 
     def _update(self, **kwargs):
         require_recompute = ['num_raw', 'num_shotnoise', 'norm']
@@ -642,6 +764,8 @@ class Mesh3CorrelationPole(ObservableLeaf):
             if 'scoccimarro' in self.basis:
                 return r'$s_1, s_2, s_3$ [$\mathrm{Mpc}/h$]'
             return r'$s_1, s_2$ [$\mathrm{Mpc}/h$]'
+        if name in ['s1', 's2', 's3']:
+            return rf'$s_{{{name[-1]}}}$ [$\mathrm{{Mpc}}/h$]'
         if name == 'value':
             if 'scoccimarro' in self.basis:
                 return r'$\zeta_{\ell}(s_1, s_2, s_3)$'
@@ -655,13 +779,8 @@ class Mesh3CorrelationPole(ObservableLeaf):
         return self.nmodes, True
 
     @classmethod
-    def _sumweight(cls, observables, name=None):
-        if name is None or name in ['value']:
-            s = sum(observable.norm for observable in observables)
-            return [observable.norm / s for observable in observables]
-        if name in ['nmodes']:
-            return [1. / len(observables)] * len(observables)
-        return [1] * len(observables)  # just sum
+    def _sumweight(cls, observables, name=None, weights=None):
+        return Mesh2SpectrumPole._sumweight(observables, name=name, weights=weights)
 
     def values(self, name=None):
         """
@@ -707,13 +826,24 @@ class Mesh3CorrelationPole(ObservableLeaf):
             fig, ax = plt.subplots()
         else:
             ax = fig.axes[0]
-        ax.plot(np.arange(len(self.s)), self.s.prod(axis=-1) * self.value(), **kwargs)
-        ax.set_xlabel('bin index')
-        if 'scoccimarro' in self.basis:
-            ax.set_ylabel(r'$s_1^2 s_2^2 s_3^2 \zeta_{\ell}(s_1, s_2, s_3)$ [$(\mathrm{Mpc}/h)^{6}$]')
+        if self.is_raveled:
+            coord = self.coords(0)
+            ax.plot(np.arange(len(coord)), coord.prod(axis=-1)**2 * self.value(), **kwargs)
+            ax.set_xlabel('bin index')
+            if 'scoccimarro' in self.basis:
+                ax.set_ylabel(r'$s_1 s_2 s_3 \zeta_{\ell}(s_1, s_2, s_3)$ [$(\mathrm{Mpc}/h)^{6}$]')
+            else:
+                ax.set_ylabel(r'$s_1 s_2 \zeta_{\ell_1 \ell_2 \ell_3}(s_1, s_2)$ [$(\mathrm{Mpc}/h)^{4}$]')
         else:
-            ax.set_ylabel(r'$s_1 s_2 \zeta_{\ell_1 \ell_2 \ell_3}(s_1, s_2)$ [$(\mathrm{Mpc}/h)^{4}$]')
+            coords = list(self.coords().values())
+            if len(coords) > 2:
+                raise NotImplementedError('Cannot plot 3D pole!')
+            value = prod(np.meshgrid(*coords, indexing='ij', sparse=True))**2 * self.value()
+            ax.pcolormesh(*coords, value.T, **kwargs)
+            ax.set_xlabel(self._plabel(self._coords_names[0]))
+            ax.set_ylabel(self._plabel(self._coords_names[1]))
         return fig
+
 
 
 
@@ -740,8 +870,14 @@ class Mesh3CorrelationPoles(ObservableTree):
         if ells is None: ells = [pole.ell for pole in poles]
         super().__init__(poles, ells=ells, attrs=attrs)
 
+    def ravel(self):
+        return self.map(lambda leaf: leaf.ravel())
+
+    def unravel(self):
+        return self.map(lambda leaf: leaf.unravel())
+
     @plotter
-    def plot(self, fig=None):
+    def plot(self, fig=None, **kwargs):
         r"""
         Plot the 3pcf multipoles.
 
@@ -763,14 +899,31 @@ class Mesh3CorrelationPoles(ObservableTree):
             Figure object.
         """
         from matplotlib import pyplot as plt
-        if fig is None:
-            fig, ax = plt.subplots()
+        if all(leaf.is_raveled for leaf in self):
+            if fig is None:
+                fig, ax = plt.subplots()
+            else:
+                ax = fig.axes[0]
+            for label in self.labels():
+                pole = self.get(**label)
+                pole.plot(fig=ax, label=rf'$\ell = {label["ells"]}$')
+            ax.legend(frameon=False)
         else:
-            ax = fig.axes[0]
-        for ell in self.ells:
-            pole = self.get(ell)
-            pole.plot(fig=ax, label=rf'$\ell = {ell}$')
-        ax.legend(frameon=False)
+            if fig is None:
+                n = len(self._branches)
+                fig, lax = plt.subplots(n, figsize=(4, 4 * n))
+            else:
+                lax = fig.axes
+            lax = np.ravel(lax)
+            values = [prod(pole.coords().values())**2 * pole.value() for pole in self]
+            vmin, vmax = min(value.min() for value in values), max(value.max() for value in values)
+            kwargs.setdefault('vmin', vmin)
+            kwargs.setdefault('vmax', vmax)
+            for i, label in enumerate(self.labels()):
+                pole = self.get(**label)
+                ax = lax[i]
+                ax.set_title(rf'$\ell = {label["ells"]}$')
+                pole.plot(fig=ax, **kwargs)
         return fig
 
 
@@ -814,11 +967,20 @@ class Count2(ObservableLeaf):
         return self.normalized_counts, True
 
     @classmethod
-    def _sumweight(cls, observables, name):
-        if name in ['normalized_counts']:
-            s = sum(observable.norm for observable in observables)
-            return [observable.norm / s for observable in observables]
-        return [1] * len(observables)  # just sum norm
+    def _sumweight(cls, observables, name, weights=None):
+        input_weights = True
+        if weights is None:
+            weights = [observable.norm for observable in observables]
+            input_weights = False
+        if name is None or name in ['normalized_counts']:
+            sumweights = sum(weights)
+            return [weight / sumweights for weight in weights]
+        if name in ['norm']:
+            if input_weights:
+                sumweights = sum(weights)
+                return [weight / sumweights for weight in weights]
+            return [1] * len(observables)  # just sum norm
+        raise ValueError(f'{name} weights not implemented')
 
     def _update(self, **kwargs):
         if 'value' in kwargs:
@@ -971,7 +1133,7 @@ class Count2Jackknife(LeafLikeObservableTree):
                 # arXiv https://arxiv.org/pdf/2109.07071.pdf eq. 27
                 alpha = self.nrealizations / (2. + np.sqrt(2) * (self.nrealizations - 1))
             else:
-                raise ValueError('Unknown jackknife correction {}'.format(correction))
+                raise ValueError('unknown jackknife correction {}'.format(correction))
         elif correction is not None:
             alpha = float(correction)
         counts = self.get(realizations=ii, cross='ii').copy()
@@ -1156,11 +1318,20 @@ class Count2Correlation(LeafLikeObservableTree):
             return _project_to_wp(self, **kwargs)
 
     @classmethod
-    def _sumweight(cls, observables, name):
-        if name in ['normalized_counts']:
-            s = sum(observable.get('DD').norm for observable in observables)
-            return [observable.get('DD').norm / s for observable in observables]
-        return [1] * len(observables)  # just sum norm
+    def _sumweight(cls, observables, name, weights=None):
+        input_weights = True
+        if weights is None:
+            weights = [observable.get('DD').norm for observable in observables]
+            input_weights = False
+        if name is None or name in ['normalized_counts']:
+            sumweights = sum(weights)
+            return [weight / sumweights for weight in weights]
+        if name in ['norm']:
+            if input_weights:
+                sumweights = sum(weights)
+                return [weight / sumweights for weight in weights]
+            return [1] * len(observables)  # just sum norm
+        raise ValueError(f'{name} weights not implemented')
 
     @classmethod
     def mean(cls, *args, **kwargs):
@@ -1682,13 +1853,21 @@ class Count2CorrelationPole(ObservableLeaf):
         return self.RR0, True
 
     @classmethod
-    def _sumweight(cls, observables, name=None):
-        if name is None or name in ['value']:
-            s = sum(observable.norm for observable in observables)
-            return [observable.norm / s for observable in observables]
-        if name in ['RR0']:
-            return [1. / len(observables)] * len(observables)
-        return [1] * len(observables)  # just sum
+    def _sumweight(cls, observables, name=None, weights=None):
+        input_weights = True
+        if weights is None:
+            weights = [observable.norm for observable in observables]
+            input_weights = False
+        if name is None or name in ['value', 'RR0']:
+            sumweights = sum(weights)
+            return [weight / sumweights for weight in weights]
+        if name in ['norm']:
+            if input_weights:
+                sumweights = sum(weights)
+                return [weight / sumweights for weight in weights]
+            return [1] * len(observables)  # just sum norm
+        raise ValueError(f'{name} weights not implemented')
+
 
     def _plabel(self, name):
         if name == 's':
@@ -1832,8 +2011,8 @@ class Count2CorrelationWedge(ObservableLeaf):
         return Count2CorrelationPole._binweight(self, name=name)
 
     @classmethod
-    def _sumweight(cls, observables, name=None):
-        return Count2CorrelationPole._sumweight(observables, name=name)
+    def _sumweight(cls, observables, name=None, weights=None):
+        return Count2CorrelationPole._sumweight(observables, name=name, weights=weights)
 
     def _plabel(self, name):
         if name == 's':
@@ -1983,8 +2162,8 @@ class Count2CorrelationWp(ObservableLeaf):
         return Count2CorrelationPole._binweight(self, name=name)
 
     @classmethod
-    def _sumweight(cls, observables, name=None):
-        return Count2CorrelationPole._sumweight(observables, name=name)
+    def _sumweight(cls, observables, name=None, weights=None):
+        return Count2CorrelationPole._sumweight(observables, name=name, weights=weights)
 
     def _plabel(self, name):
         if name == 'rp':

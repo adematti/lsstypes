@@ -6,7 +6,7 @@ import numpy as np
 
 import lsstypes as types
 from lsstypes import ObservableLeaf, ObservableTree, read, write
-from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole, Mesh3SpectrumPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
+from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole, Mesh3SpectrumPoles, Mesh3CorrelationPole, Mesh3CorrelationPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
 from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood
 
 
@@ -285,7 +285,7 @@ def test_types(show=False):
             spectrum.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
         return Mesh2SpectrumPoles(spectrum, ells=ells)
 
-    def get_bispectrum(seed=42, basis='sugiyama'):
+    def get_spectrum2(seed=42, basis='sugiyama', full=False):
         ells = [0, 2]
         rng = np.random.RandomState(seed=seed)
 
@@ -316,13 +316,55 @@ def test_types(show=False):
                 return mask
 
             mask = get_order_mask(uedges)
+            if full: mask = Ellipsis
             # of shape (nbins, ndim, 2)
             k_edges = np.concatenate([_product([edge[..., 0] for edge in uedges])[..., None], _product([edge[..., 1] for edge in uedges])[..., None]], axis=-1)[mask]
             k = _product(k)[mask]
             nmodes = np.prod(_product(nmodes1d)[mask], axis=-1)
             k = np.mean(k_edges, axis=-1)
-            spectrum.append(Mesh3SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.shape[0])))
+            spectrum.append(Mesh3SpectrumPole(k=k, k_edges=k_edges, nmodes=nmodes, num_raw=rng.uniform(size=k.shape[0])))
         return Mesh3SpectrumPoles(spectrum, ells=ells)
+
+
+    def get_correlation2(seed=42, basis='sugiyama', full=False):
+        ells = [0, 2]
+        rng = np.random.RandomState(seed=seed)
+
+        assert basis in ['sugiyama', 'sugiyama-diagonal']
+        if 'scoccimarro' in basis: ndim = 3
+        else: ndim = 2
+
+        correlation = []
+        for ell in ells:
+            uedges = np.linspace(0., 100, 41)
+            uedges = [np.column_stack([uedges[:-1], uedges[1:]])] * ndim
+            s = [np.mean(uedge, axis=-1) for uedge in uedges]
+            nmodes1d = [np.ones(uedge.shape[0], dtype='i') for uedge in uedges]
+
+            def _product(array):
+                if not isinstance(array, (tuple, list)):
+                    array = [array] * ndim
+                if 'diagonal' in basis or 'equilateral' in basis:
+                    grid = [np.array(array[0])] * ndim
+                else:
+                    grid = np.meshgrid(*array, sparse=False, indexing='ij')
+                return np.column_stack([tmp.ravel() for tmp in grid])
+
+            def get_order_mask(edges):
+                xmid = _product([np.mean(edge, axis=-1) for edge in edges])
+                mask = True
+                for i in range(xmid.shape[1] - 1): mask &= xmid[:, i] <= xmid[:, i + 1]  # select k1 <= k2 <= k3...
+                return mask
+
+            mask = get_order_mask(uedges)
+            if full: mask = Ellipsis
+            # of shape (nbins, ndim, 2)
+            s_edges = np.concatenate([_product([edge[..., 0] for edge in uedges])[..., None], _product([edge[..., 1] for edge in uedges])[..., None]], axis=-1)[mask]
+            s = _product(s)[mask]
+            nmodes = np.prod(_product(nmodes1d)[mask], axis=-1)
+            k = np.mean(s_edges, axis=-1)
+            correlation.append(Mesh3CorrelationPole(s=s, s_edges=s_edges, nmodes=nmodes, num_raw=rng.uniform(size=k.shape[0])))
+        return Mesh3CorrelationPoles(correlation, ells=ells)
 
     def get_count(mode='smu', seed=42):
         rng = np.random.RandomState(seed=seed)
@@ -383,8 +425,21 @@ def test_types(show=False):
     all_spectrum.get('z0').plot(show=show)
 
     for basis in ['sugiyama', 'sugiyama-diagonal', 'scoccimarro', 'scoccimarro-equilateral']:
-        spectrum = get_bispectrum(basis=basis)
+        if basis in ['sugiyama', 'scoccimarro']:
+            spectrum = get_spectrum2(basis=basis, full=True)
+            spectrum2 = spectrum.unravel()
+            for pole in spectrum2:
+                assert len(pole.shape) > 1
+            if basis != 'scoccimarro':
+                spectrum2.plot(show=show)
+            spectrum2 = spectrum2.ravel()
+            for pole in spectrum2:
+                assert len(pole.shape) == 1
+            assert spectrum2 == spectrum
+
+        spectrum = get_spectrum2(basis=basis)
         spectrum.plot(show=show)
+        spectrum2.plot(show=show)
         spectrum2 = spectrum.select(k=slice(0, None, 2))
         spectrum2 = spectrum.select(k=(0., 0.15))
         spectrum2 = spectrum.select(k=[(0., 0.1), (0., 0.15)])
@@ -422,6 +477,30 @@ def test_types(show=False):
     value, covariance = correlation.project(kw_covariance=dict())
     value.plot(show=show)
     covariance.plot(show=show)
+
+    for basis in ['sugiyama', 'sugiyama-diagonal']:
+        if basis in ['sugiyama', 'scoccimarro']:
+            correlation = get_correlation2(basis=basis, full=True)
+            correlation2 = correlation.unravel()
+            for pole in correlation2:
+                assert len(pole.shape) > 1
+            if basis != 'scoccimarro':
+                correlation2.plot(show=show)
+            correlation2 = correlation2.ravel()
+            for pole in correlation2:
+                assert len(pole.shape) == 1
+            assert correlation2 == correlation
+
+        correlation = get_correlation2(basis=basis)
+        correlation.plot(show=show)
+        correlation2.plot(show=show)
+        correlation2 = correlation.select(s=slice(0, None, 2))
+        correlation2 = correlation.select(s=(0., 0.15))
+        correlation2 = correlation.select(s=[(0., 0.1), (0., 0.15)])
+        fn = test_dir / 'correlation.h5'
+        correlation.write(fn)
+        correlation2 = read(fn)
+        assert correlation2 == correlation
 
 
 def test_sparse():
@@ -653,8 +732,6 @@ def test_savetxt():
 
 if __name__ == '__main__':
 
-    test_external()
-    exit()
     test_tree()
     test_types()
     test_sparse()
