@@ -1215,6 +1215,8 @@ class Count2Correlation(LeafLikeObservableTree):
     ----------
     estimator : str, optional
         Estimator type ('landyszalay' or 'natural'). Default is 'landyszalay'.
+        One can also provide directly the formula, e.g. 'DD / RR'.
+        In this case, ``kwargs`` should provide the pair counts.
 
     attrs : dict, optional
         Additional attributes.
@@ -1225,7 +1227,7 @@ class Count2Correlation(LeafLikeObservableTree):
 
     _name = 'count2_correlation'
 
-    def __init__(self, estimator='landyszalay', attrs=None, **kwargs):
+    def __init__(self, estimator='landyszalay', attrs=None, meta=None, **kwargs):
         with_shifted = any('S' in key for key in kwargs)
         if estimator == 'landyszalay':
             count_names = ['DD', 'RR']
@@ -1235,9 +1237,18 @@ class Count2Correlation(LeafLikeObservableTree):
             count_names = ['DD', 'RR']
             if with_shifted: count_names += ['SS']
         else:
-            raise NotImplementedError(f'estimator {estimator} not implemented')
+            import ast
+
+            def extract_variables(expr):
+                tree = ast.parse(expr, mode='eval')
+                return [node.id for node in ast.walk(tree) if isinstance(node, ast.Name)]
+
+            count_names = extract_variables(estimator)
+            assert set(count_names) == set(kwargs), f'count names in {estimator} are {count_names}, but {list(kwargs)} are provided'
+            count_names = list(kwargs)
+
         super().__init__([kwargs[count_name] for count_name in count_names], count_names=count_names,
-                         meta=dict(estimator=estimator, with_shifted=with_shifted), attrs=attrs)
+                         meta=dict(estimator=estimator, **(meta or {})), attrs=attrs)
 
     def value(self):
         """
@@ -1247,16 +1258,17 @@ class Count2Correlation(LeafLikeObservableTree):
         -------
         estimator : array
         """
-        RR = self.get('RR').value()
-        nonzero = RR != 0
-        scount_name = 'S' if self.with_shifted else 'R'
         if self.estimator == 'landyszalay':
+            scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
             corr = self.get('DD').value() - self.get('D'  + scount_name).value() - self.get(scount_name + 'D').value() + self.get(scount_name * 2).value()
-            corr /= RR
+            return corr / self.get('RR').value()
         elif self.estimator == 'natural':
+            RR = self.get('RR').value()
+            scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
             corr = self.get('DD').value() - self.get(scount_name * 2).value()
-            corr /= RR
-        return np.where(nonzero, corr, np.nan)
+            return corr / self.get('RR').value()
+        state = {name: self.get(name).value() for name in self.count_names}
+        return eval(self.estimator, {}, state)
 
     def coords(self, *args, **kwargs):
         """
@@ -1321,7 +1333,8 @@ class Count2Correlation(LeafLikeObservableTree):
     def _sumweight(cls, observables, name, weights=None):
         input_weights = True
         if weights is None:
-            weights = [observable.get('DD').norm for observable in observables]
+            # First is presumably DD
+            weights = [observable.get(observable.count_names[0]).norm for observable in observables]
             input_weights = False
         if name is None or name in ['normalized_counts']:
             sumweights = sum(weights)

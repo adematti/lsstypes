@@ -448,7 +448,9 @@ def test_types(show=False):
         spectrum2 = read(fn)
         assert spectrum2 == spectrum
 
-    correlation = get_correlation()
+    correlation = get_correlation(mode='smu', seed=42)
+    correlation2 = Count2Correlation(estimator='(DD - DR - RD + RR) / RR', **{name: correlation.get(name) for name in ['DD', 'DR', 'RD', 'RR']})
+    assert np.allclose(correlation2.value(), correlation.value())
     correlation2 = correlation.select(s=slice(0, None, 2))
     correlation3 = correlation2.at(s=(20., 100.)).select(s=slice(0, None, 2))
     #print(correlation3.edges('s'))

@@ -2141,14 +2141,14 @@ class _ObservableTreeUpdateRef(object):
                 start, stop = _replace_in_tree(new, index, sub)
         return new
 
-    def map(self, f, level=None, labels=False):
+    def map(self, f, level=None, input_label=False):
         """Apply a function (that should return a branch) to branches of the tree."""
         if self._hook is not None:
             raise NotImplementedError('hook not implemented for clone')
         new = self._tree.copy()
         for index in (self._indices if self._indices is not None else [None]):
             branch = _get_leaf(self._tree, index)
-            sub = branch.map(f, level=level, labels=labels)
+            sub = branch.map(f, level=level, input_label=input_label)
             if index is None:
                 new = sub
             else:
