@@ -1261,14 +1261,16 @@ class Count2Correlation(LeafLikeObservableTree):
         if self.estimator == 'landyszalay':
             scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
             corr = self.get('DD').value() - self.get('D'  + scount_name).value() - self.get(scount_name + 'D').value() + self.get(scount_name * 2).value()
-            return corr / self.get('RR').value()
+            value = corr / self.get('RR').value()
         elif self.estimator == 'natural':
             RR = self.get('RR').value()
             scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
             corr = self.get('DD').value() - self.get(scount_name * 2).value()
-            return corr / self.get('RR').value()
-        state = {name: self.get(name).value() for name in self.count_names}
-        return eval(self.estimator, {}, state)
+            value = corr / self.get('RR').value()
+        else:
+            state = {name: self.get(name).value() for name in self.count_names}
+            value = eval(self.estimator, {}, state)
+        return value
 
     def coords(self, *args, **kwargs):
         """
@@ -1283,11 +1285,11 @@ class Count2Correlation(LeafLikeObservableTree):
         -------
         coords : array or dict
         """
-        return self.get('RR').coords(*args, **kwargs)
+        return self.get('RR' if self.estimator in ['landyszalay', 'natural'] else self.count_names[0]).coords(*args, **kwargs)
 
     def project(self, mode=None, **kwargs):
         """
-        Project the correlation function onto multipoles, wedges, or projected bins.
+        Project the correlation function onto multipoles, wedges, or bins in radial separation.
 
         Parameters
         ----------
@@ -1313,7 +1315,7 @@ class Count2Correlation(LeafLikeObservableTree):
         Returns
         -------
         poles : Count2CorrelationPole, Count2CorrelationPoles, Count2CorrelationWedge, Count2CorrelationWedges, Count2CorrelationWp
-            Correlation function multipoles.
+            Correlation function multipoles or wedges or projected correlation function.
 
         window : WindowMatrix, optional
             Window matrix for convolving theory (returned if ``kw_window`` is provided).
@@ -1321,13 +1323,14 @@ class Count2Correlation(LeafLikeObservableTree):
         covariance : CovarianceMatrix, optional
             Covariance matrix of the multipoles (returned if ``kw_covariance`` is provided).
             """
-        mode, kwargs = _get_project_mode(self, mode=mode, **kwargs)
+        mode, kwargs = _get_project_mode(self, mode=mode, **kwargs) 
         if mode == 'poles':
             return _project_to_poles(self, **kwargs)
         if mode == 'wedges':
             return _project_to_wedges(self, **kwargs)
         if mode == 'wp':
             return _project_to_wp(self, **kwargs)
+        raise NotImplementedError(f'could not project correlation function with {mode}')
 
     @classmethod
     def _sumweight(cls, observables, name, weights=None):
@@ -1348,7 +1351,7 @@ class Count2Correlation(LeafLikeObservableTree):
 
     @classmethod
     def mean(cls, *args, **kwargs):
-        return NotImplementedError('mean not defined')
+        raise NotImplementedError('mean not defined')
 
 
 @register_type

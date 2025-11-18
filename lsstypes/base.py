@@ -554,7 +554,7 @@ class ObservableLeaf(object):
         assert edges is not None, 'edges must be provided'
         return np.mean(edges, axis=-1)
 
-    def edges(self, axis=None, default=None):
+    def edges(self, axis=None, **kwargs):
         """
         Get edge array(s).
 
@@ -564,7 +564,8 @@ class ObservableLeaf(object):
             Name or index of coordinate.
 
         default : any, optional
-            If `None`, estimate edges from coordinates if not provided.
+            When edges are not in the observable, and default is provided, return default.
+            Else if default is not provided, estimate edges from coordinates.
 
         Returns
         -------
@@ -577,7 +578,9 @@ class ObservableLeaf(object):
         axis_edges = _edges_name(axis)
         if axis_edges in self._data:
             return self._data[axis_edges]
-        if default is None:
+        with_default = kwargs
+        if with_default:
+            default = kwargs['default']
             return default
         coord = self._data[axis]
         edges = (coord[:-1] + coord[1:]) / 2.
@@ -608,6 +611,14 @@ class ObservableLeaf(object):
         """Get the 'main' value array (the first one)."""
         return self._data[self._values_names[0]]
 
+    def value_as_leaf(self, **kwargs):
+        """Return value as leaf."""
+        value = self.value(**kwargs)
+        axes_edges = [_edges_name(axis) for axis in self._coords_names]
+        edges = {axis_edge: self.edges(axis_edge, default=None) for axis_edge in axes_edges}
+        edges = {axis_edge: edge for axis_edge, edge in edges.items() if edge is not None}
+        return ObservableLeaf(value=value, **self.coords(), **edges, coords=self._coords_names)
+    
     def __array__(self):
         return np.asarray(self.value())
 
@@ -2350,6 +2361,10 @@ class LeafLikeObservableTree(ObservableTree):
         """Main value of the observable."""
         raise NotImplementedError
 
+    def value_as_leaf(self, **kwargs):
+        """Return value as leaf."""
+        return ObservableLeaf.value_as_leaf(self, **kwargs)
+    
     @classmethod
     def _average(cls, observables, weights=None):
         # Average multiple observables

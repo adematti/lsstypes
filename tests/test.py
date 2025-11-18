@@ -14,16 +14,20 @@ def test_tree():
 
     test_dir = Path('_tests')
 
-    s = np.linspace(0., 100., 51)
-    mu = np.linspace(-1., 1., 101)
+    s_edges = np.linspace(0., 100., 51)
+    mu_edges = np.linspace(-1., 1., 101)
+    s_edges = np.column_stack([s_edges[:-1], s_edges[1:]])
+    mu_edges = np.column_stack([mu_edges[:-1], mu_edges[1:]])
     rng = np.random.RandomState(seed=42)
     labels = ['DD', 'DR', 'RR']
     leaves = []
     for label in labels:
+        s, mu = np.mean(s_edges, axis=-1), np.mean(mu_edges, axis=-1)
         counts = 1. + rng.uniform(size=(s.size, mu.size))
-        leaves.append(ObservableLeaf(counts=counts, s=s, mu=mu, coords=['s', 'mu'], attrs=dict(los='x')))
+        leaves.append(ObservableLeaf(counts=counts, s=s, mu=mu, s_edges=s_edges, mu_edges=mu_edges, coords=['s', 'mu'], attrs=dict(los='x')))
 
     leaf = leaves[0]
+    assert np.allclose(leaf.value_as_leaf().value(), leaf.values('counts'))
     fn = test_dir / 'leaf.h5'
     write(fn, leaf)
     leaf2 = read(fn)
@@ -42,8 +46,7 @@ def test_tree():
     leaf3 = leaf.at[...].select(s=(10., 80.), mu=(-0.8, 1.))
     assert leaf3.shape == leaf2.shape
     leaf4 = leaf.at(s=(10., 80.)).select(s=(20., 70.), mu=(-0.8, 1.))
-    assert len(leaf4.coords('s')) == 41
-
+    assert len(leaf4.coords('s')) == 40
 
     tree = ObservableTree(leaves, keys=labels)
     assert tree.labels(return_type='keys') == ['keys']
@@ -605,6 +608,7 @@ def test_external():
 
     pycorr = generate_pycorr()
     corr = from_pycorr(pycorr)
+    assert np.allclose(corr.value_as_leaf().value(), corr.value())
     fn = test_dir / 'corr.h5'
     corr.write(fn)
     corr = read(fn)
