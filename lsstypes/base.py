@@ -208,7 +208,11 @@ def from_state(state):
     try:
         cls = _registry[_name]
     except KeyError:
-        raise ValueError(f'Cannot find {_name} in registered observables: {_registry}')
+        try:  # backward-compatibility
+            __registry = {name.replace('_', ''): value for name, value in _registry.items()}
+            cls = __registry[_name]
+        except KeyError:
+            raise ValueError(f'Cannot find {_name} in registered observables: {_registry}')
     new = cls.__new__(cls)
     new.__setstate__(state)
     return new
@@ -2506,7 +2510,7 @@ class WindowMatrix(object):
 
     """A window matrix, with associated observable and theory."""
 
-    _name = 'windowmatrix'
+    _name = 'window_matrix'
 
     def __init__(self, value, observable, theory, attrs=None):
         self._value = value
@@ -2882,7 +2886,7 @@ class CovarianceMatrix(object):
 
     """A covariance matrix, with associated observable."""
 
-    _name = 'covariancematrix'
+    _name = 'covariance_matrix'
 
     def __init__(self, value, observable, attrs=None):
         self._value = value
@@ -2979,6 +2983,37 @@ class CovarianceMatrix(object):
         """
         return write(filename, self)
 
+
+    @classmethod
+    def sum(cls, matrices, weights=None):
+        """
+        Sum multiple covariance matrices.
+        The result would be the covariance on the sum of observables,
+        if they were independent.
+
+        WARNING
+        -------
+        Assumes observables are independent.
+        """
+        new = matrices[0].copy()
+
+        def get_sumweight(leaves):
+            sumweight = getattr(leaves[0], '_sumweight', None)
+            weight = None
+            if sumweight is not None:
+                weight = sumweight(leaves, weights=weights)
+            if weight is None:
+                weight = [np.ones_like(leaves[0].value()) / len(leaves)] * len(leaves)
+            return weight
+
+        assert all(matrix.observable.labels(level=None, return_type='flatten') == new.observable.labels(level=None, return_type='flatten') for matrix in matrices[1:])
+        weights = list(map(get_sumweight, zip(*[tree_flatten(matrix.observable, level=None) for matrix in matrices])))
+        weights = [np.concatenate(w, axis=0) for w in zip(*weights)]
+        weights2 = [weight[..., None] * weight for weight in weights]
+        new._value = sum(weight2 * matrix._value for matrix, weight2 in zip(matrices, weights2))
+        new._observable = matrices[0]._observable.sum([matrix.observable for matrix in matrices])
+        return new
+    
     @utils.plotter
     def plot(self, level=None, corrcoef=False, **kwargs):
         """
@@ -3298,7 +3333,7 @@ class GaussianLikelihood(object):
 
     """A Gaussian likelihood, with associated observable, window matrix, and covariance matrix."""
 
-    _name = 'gaussianlikelihood'
+    _name = 'gaussian_likelihood'
 
     def __init__(self, observable, window, covariance, attrs=None):
         self._observable = observable
