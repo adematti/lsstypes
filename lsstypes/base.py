@@ -801,8 +801,11 @@ class ObservableLeaf(object):
             edges = limit
 
         iaxis = self._coords_names.index(axis)
+        # Tolerance: 1e-5x bin width
+        width = np.abs(edges[..., 1] - edges[..., 0])
+        tol = 1e-5 * width
         # Broadcast iedges[:, None, :] against edges[None, :, :]
-        mask = (self_edges[None, ..., 0] >= edges[:, None, ..., 0]) & (self_edges[None, ..., 1] <= edges[:, None, ..., 1])  # (new_size, old_size) or (new_size, old_size, ndim)
+        mask = (self_edges[None, ..., 0] >= edges[:, None, ..., 0] - tol[:, None]) & (self_edges[None, ..., 1] <= edges[:, None, ..., 1] + tol[:, None])  # (new_size, old_size) or (new_size, old_size, ndim)
         if mask.ndim >= 3:
             mask = mask.all(axis=-1)  # collapse extra dims if needed
         shape = self.shape
@@ -2271,7 +2274,6 @@ class _ObservableTreeUpdateRef(object):
                 start, stop = _get_range_in_tree(tree, (_ibranch,))
                 transforms.append(_transform)
                 starts.append((start, stop))
-
         if self._hook:
             transform = _concatenate_transforms(transforms, starts, size=tree.size)
         tree = tree.copy()
