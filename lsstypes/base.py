@@ -545,14 +545,18 @@ class ObservableLeaf(object):
         if center == 'mid_if_edges_and_nan':
             mid = self.coords(axis=axis, center='mid_if_edges')
             coord = self._data[axis]
-            return np.where(np.isnan(coord), mid, coord)
-        if center == 'mid_if_edges':
-            if edges is None: center = None
-            else: center = 'mid'
-        if center is None:
-            return self._data[axis]
-        assert edges is not None, 'edges must be provided'
-        return np.mean(edges, axis=-1)
+            toret = np.where(np.isnan(coord), mid, coord)
+        elif center == 'mid_if_edges':
+            if edges is None:
+                toret = self._data[axis]
+            else:
+                assert edges is not None, 'edges must be provided'
+                toret = np.mean(edges, axis=-1)
+        elif center is None:
+            toret = self._data[axis]
+        else:
+            raise NotImplementedError(f'could not understand center={center}')
+        return toret
 
     def edges(self, axis=None, default=None):
         """

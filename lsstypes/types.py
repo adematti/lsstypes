@@ -947,6 +947,7 @@ class Count2(ObservableLeaf):
 
     kwargs : dict
         Additional keyword arguments for initialization.
+        Notably, "coords".
     """
     _name = 'count2'
 
