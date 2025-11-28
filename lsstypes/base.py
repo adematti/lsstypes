@@ -208,7 +208,11 @@ def from_state(state):
     try:
         cls = _registry[_name]
     except KeyError:
-        raise ValueError(f'Cannot find {_name} in registered observables: {_registry}')
+        try:  # backward-compatibility
+            __registry = {name.replace('_', ''): value for name, value in _registry.items()}
+            cls = __registry[_name]
+        except KeyError:
+            raise ValueError(f'Cannot find {_name} in registered observables: {_registry}')
     new = cls.__new__(cls)
     new.__setstate__(state)
     return new
@@ -558,7 +562,7 @@ class ObservableLeaf(object):
             raise NotImplementedError(f'could not understand center={center}')
         return toret
 
-    def edges(self, axis=None, default=None):
+    def edges(self, axis=None, **kwargs):
         """
         Get edge array(s).
 
@@ -568,7 +572,8 @@ class ObservableLeaf(object):
             Name or index of coordinate.
 
         default : any, optional
-            If `None`, estimate edges from coordinates if not provided.
+            When edges are not in the observable, and default is provided, return default.
+            Else if default is not provided, estimate edges from coordinates.
 
         Returns
         -------
@@ -581,7 +586,9 @@ class ObservableLeaf(object):
         axis_edges = _edges_name(axis)
         if axis_edges in self._data:
             return self._data[axis_edges]
-        if default is None:
+        with_default = kwargs
+        if with_default:
+            default = kwargs['default']
             return default
         coord = self._data[axis]
         edges = (coord[:-1] + coord[1:]) / 2.
@@ -612,6 +619,14 @@ class ObservableLeaf(object):
         """Get the 'main' value array (the first one)."""
         return self._data[self._values_names[0]]
 
+    def value_as_leaf(self, **kwargs):
+        """Return value as leaf."""
+        value = self.value(**kwargs)
+        axes_edges = [_edges_name(axis) for axis in self._coords_names]
+        edges = {axis_edge: self.edges(axis_edge, default=None) for axis_edge in axes_edges}
+        edges = {axis_edge: edge for axis_edge, edge in edges.items() if edge is not None}
+        return ObservableLeaf(value=value, **self.coords(), **edges, coords=self._coords_names)
+    
     def __array__(self):
         return np.asarray(self.value())
 
@@ -790,8 +805,11 @@ class ObservableLeaf(object):
             edges = limit
 
         iaxis = self._coords_names.index(axis)
+        # Tolerance: 1e-5x bin width
+        width = np.abs(edges[..., 1] - edges[..., 0])
+        tol = 1e-5 * width
         # Broadcast iedges[:, None, :] against edges[None, :, :]
-        mask = (self_edges[None, ..., 0] >= edges[:, None, ..., 0]) & (self_edges[None, ..., 1] <= edges[:, None, ..., 1])  # (new_size, old_size) or (new_size, old_size, ndim)
+        mask = (self_edges[None, ..., 0] >= edges[:, None, ..., 0] - tol[:, None]) & (self_edges[None, ..., 1] <= edges[:, None, ..., 1] + tol[:, None])  # (new_size, old_size) or (new_size, old_size, ndim)
         if mask.ndim >= 3:
             mask = mask.all(axis=-1)  # collapse extra dims if needed
         shape = self.shape
@@ -2260,7 +2278,6 @@ class _ObservableTreeUpdateRef(object):
                 start, stop = _get_range_in_tree(tree, (_ibranch,))
                 transforms.append(_transform)
                 starts.append((start, stop))
-
         if self._hook:
             transform = _concatenate_transforms(transforms, starts, size=tree.size)
         tree = tree.copy()
@@ -2354,6 +2371,10 @@ class LeafLikeObservableTree(ObservableTree):
         """Main value of the observable."""
         raise NotImplementedError
 
+    def value_as_leaf(self, **kwargs):
+        """Return value as leaf."""
+        return ObservableLeaf.value_as_leaf(self, **kwargs)
+    
     @classmethod
     def _average(cls, observables, weights=None):
         # Average multiple observables
@@ -2495,7 +2516,7 @@ class WindowMatrix(object):
 
     """A window matrix, with associated observable and theory."""
 
-    _name = 'windowmatrix'
+    _name = 'window_matrix'
 
     def __init__(self, value, observable, theory, attrs=None):
         self._value = value
@@ -2871,7 +2892,7 @@ class CovarianceMatrix(object):
 
     """A covariance matrix, with associated observable."""
 
-    _name = 'covariancematrix'
+    _name = 'covariance_matrix'
 
     def __init__(self, value, observable, attrs=None):
         self._value = value
@@ -2968,6 +2989,37 @@ class CovarianceMatrix(object):
         """
         return write(filename, self)
 
+
+    @classmethod
+    def sum(cls, matrices, weights=None):
+        """
+        Sum multiple covariance matrices.
+        The result would be the covariance on the sum of observables,
+        if they were independent.
+
+        WARNING
+        -------
+        Assumes observables are independent.
+        """
+        new = matrices[0].copy()
+
+        def get_sumweight(leaves):
+            sumweight = getattr(leaves[0], '_sumweight', None)
+            weight = None
+            if sumweight is not None:
+                weight = sumweight(leaves, weights=weights)
+            if weight is None:
+                weight = [np.ones_like(leaves[0].value()) / len(leaves)] * len(leaves)
+            return weight
+
+        assert all(matrix.observable.labels(level=None, return_type='flatten') == new.observable.labels(level=None, return_type='flatten') for matrix in matrices[1:])
+        weights = list(map(get_sumweight, zip(*[tree_flatten(matrix.observable, level=None) for matrix in matrices])))
+        weights = [np.concatenate(w, axis=0) for w in zip(*weights)]
+        weights2 = [weight[..., None] * weight for weight in weights]
+        new._value = sum(weight2 * matrix._value for matrix, weight2 in zip(matrices, weights2))
+        new._observable = matrices[0]._observable.sum([matrix.observable for matrix in matrices])
+        return new
+    
     @utils.plotter
     def plot(self, level=None, corrcoef=False, **kwargs):
         """
@@ -3287,7 +3339,7 @@ class GaussianLikelihood(object):
 
     """A Gaussian likelihood, with associated observable, window matrix, and covariance matrix."""
 
-    _name = 'gaussianlikelihood'
+    _name = 'gaussian_likelihood'
 
     def __init__(self, observable, window, covariance, attrs=None):
         self._observable = observable
