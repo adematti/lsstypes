@@ -1,35 +1,51 @@
 import numpy as np
 
-from .types import Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole, Mesh3SpectrumPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
+from .types import (Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole, Mesh3SpectrumPoles, Count2, Count2Jackknife,
+Count2Correlation, Count2JackknifeCorrelation, Mesh2CorrelationPole, Mesh2CorrelationPoles)
 from .utils import my_ones_like
 
 
 def from_pypower(power):
     r"""
-    Convert a :mod:`pypower` power spectrum object to :class:`Mesh2SpectrumPoles` format.
+    Convert a :mod:`pypower` power spectrum or correlation function object to :class:`Mesh2SpectrumPoles` or :class:`Mesh2CorrelationPoles` format.
 
     Parameters
     ----------
     power : object
-        Input power spectrum object.
+        Input power spectrum or correlation function object.
 
     Returns
     -------
-    Mesh2SpectrumPoles
-        Poles object containing the converted power spectrum data.
+    Mesh2SpectrumPoles, Mesh2CorrelationPoles
+        Poles object containing the converted power spectrum or correlation function data.
     """
-    ells = power.ells
-    poles = []
-    for ill, ell in enumerate(ells):
-        k_edges = np.column_stack([power.edges[0][:-1], power.edges[0][1:]])
-        k = power.k
-        ones = my_ones_like(power.power_nonorm[ill])
-        num_raw = power.power[ill] * power.wnorm + (ell == 0) * power.shotnoise_nonorm
-        poles.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=num_raw,
-                                       num_shotnoise=power.shotnoise_nonorm * ones * (ell == 0),
-                                       norm=power.wnorm * ones,
-                                       nmodes=power.nmodes, ell=ell))
-    return Mesh2SpectrumPoles(poles)
+    if hasattr(power, 's'):  # correlation
+        corr = power
+        ells = corr.ells
+        poles = []
+        for ill, ell in enumerate(ells):
+            s_edges = np.column_stack([corr.edges[0][:-1], corr.edges[0][1:]])
+            s = corr.s
+            ones = (0. >= corr.edges[0][:-1]) & (0. < corr.edges[0][1:])
+            num_raw = corr.corr[ill] * corr.wnorm + (ell == 0) * corr.shotnoise_nonorm
+            poles.append(Mesh2CorrelationPole(s=s, s_edges=s_edges, num_raw=num_raw,
+                                        num_shotnoise=corr.shotnoise_nonorm * ones * (ell == 0),
+                                        norm=corr.wnorm * ones,
+                                        nmodes=corr.nmodes, ell=ell))
+        return Mesh2CorrelationPoles(poles)
+    else:
+        ells = power.ells
+        poles = []
+        for ill, ell in enumerate(ells):
+            k_edges = np.column_stack([power.edges[0][:-1], power.edges[0][1:]])
+            k = power.k
+            ones = my_ones_like(power.power_nonorm[ill])
+            num_raw = power.power[ill] * power.wnorm + (ell == 0) * power.shotnoise_nonorm
+            poles.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=num_raw,
+                                        num_shotnoise=power.shotnoise_nonorm * ones * (ell == 0),
+                                        norm=power.wnorm * ones,
+                                        nmodes=power.nmodes, ell=ell))
+        return Mesh2SpectrumPoles(poles)
 
 
 def from_pycorr(correlation):

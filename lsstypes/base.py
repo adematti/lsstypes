@@ -626,7 +626,7 @@ class ObservableLeaf(object):
         edges = {axis_edge: self.edges(axis_edge, default=None) for axis_edge in axes_edges}
         edges = {axis_edge: edge for axis_edge, edge in edges.items() if edge is not None}
         return ObservableLeaf(value=value, **self.coords(), **edges, coords=self._coords_names)
-    
+
     def __array__(self):
         return np.asarray(self.value())
 
@@ -1355,7 +1355,7 @@ def tree_flatten(tree, level=1, is_leaf=None, return_labels=False, return_strlab
     return tuple(toret)
 
 
-def tree_labels(tree, level=1, return_type='flatten', as_str=False, is_leaf=None):
+def tree_labels(tree, return_type='flatten', as_str=False, level=1, is_leaf=None):
     """
     Return a list of dicts with the labels for each branch or leaf.
 
@@ -1363,8 +1363,6 @@ def tree_labels(tree, level=1, return_type='flatten', as_str=False, is_leaf=None
     ----------
     tree : object
         Observable tree.
-    level : int, optional
-        Level to retrieve labels from. If `None`, retrieve all levels.
     return_type : str, optional
         If 'keys' or 'names', return only the list of unique keys (i.e. not label values) up to `level`.
         If 'flatten' (default), return the list of dictionaries {label key: label value} for each branch or leaf up to `level`.
@@ -1372,6 +1370,8 @@ def tree_labels(tree, level=1, return_type='flatten', as_str=False, is_leaf=None
         If 'unflatten', return a dictionary of {label key, label values}. If a label key does not exit in a leaf, fill with `Ellipsis`.
     as_str : bool, optional
         If `True`, return labels as strings.
+    level : int, optional
+        Level to retrieve labels from. If `None`, retrieve all levels.
     is_leaf : callable, optional
         Function to apply to a branch which returns `True` if branch is to be considered a leaf
         else `False` (and iterated over).
@@ -1727,14 +1727,12 @@ class ObservableTree(object):
     def meta(self):
         return self._meta
 
-    def labels(self, level=1, return_type='flatten', as_str=False, is_leaf=None):
+    def labels(self, return_type='flatten', as_str=False, level=1, is_leaf=None):
         """
         Return a list of dicts with the labels for each branch or leaf.
 
         Parameters
         ----------
-        level : int, optional
-            Level to retrieve labels from. If `None`, retrieve all levels.
         return_type : str, optional
             If 'keys' or 'names', return only the list of unique keys (i.e. not label values) up to `level`.
             If 'flatten' (default), return the list of dictionaries {label key: label value} for each branch or leaf up to `level`.
@@ -1742,6 +1740,8 @@ class ObservableTree(object):
             If 'unflatten', return a dictionary of {label key, label values}. If a label key does not exit in a leaf, fill with `Ellipsis`.
         as_str : bool, optional
             If `True`, return labels as strings.
+         level : int, optional
+            Level to retrieve labels from. If `None`, retrieve all levels.
 
         Returns
         -------
@@ -1749,7 +1749,7 @@ class ObservableTree(object):
         """
         if is_leaf is None:
             is_leaf = 'input_not_leaf'
-        return tree_labels(self, level=level, return_type=return_type, as_str=as_str, is_leaf=is_leaf)
+        return tree_labels(self, return_type=return_type, as_str=as_str, level=level, is_leaf=is_leaf)
 
     def __getattr__(self, name):
         if name in self._meta:
@@ -2287,7 +2287,7 @@ class _ObservableTreeUpdateRef(object):
         new = tree
         if index is not None:
             new = self._tree.copy()
-            start, stop = _replace_in_tree(new, (index,), tree)
+            start, stop = _replace_in_tree(new, index, tree)
             if self._hook:
                 transform = _pad_transform(transform, start=start, stop=stop, size=self._tree.size)
         if self._hook:
@@ -2374,7 +2374,7 @@ class LeafLikeObservableTree(ObservableTree):
     def value_as_leaf(self, **kwargs):
         """Return value as leaf."""
         return ObservableLeaf.value_as_leaf(self, **kwargs)
-    
+
     @classmethod
     def _average(cls, observables, weights=None):
         # Average multiple observables
@@ -3019,7 +3019,7 @@ class CovarianceMatrix(object):
         new._value = sum(weight2 * matrix._value for matrix, weight2 in zip(matrices, weights2))
         new._observable = matrices[0]._observable.sum([matrix.observable for matrix in matrices])
         return new
-    
+
     @utils.plotter
     def plot(self, level=None, corrcoef=False, **kwargs):
         """
