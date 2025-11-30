@@ -479,7 +479,8 @@ def _check_data_shapes(self):
             vshape = self._data[name].shape
         except AttributeError as exc:
             raise AttributeError(f'{name} is not an array') from exc
-        assert vshape == cshape, f'expected shape of {name} is {cshape}, got {vshape}'
+        if cshape:
+            assert vshape == cshape, f'expected shape of {name} is {cshape}, got {vshape}'
 
 
 @register_type
@@ -1856,6 +1857,25 @@ class ObservableTree(object):
         if is_leaf is None:
             is_leaf = 'input_not_leaf'
         return tree_flatten(self, level=level, is_leaf=is_leaf, return_labels=return_labels, return_strlabels=return_strlabels)
+
+    def items(self, level=1, is_leaf=None):
+        """
+        Iterate over branches or leaves of the tree.
+
+        Parameters
+        ----------
+        level : int, optional
+            Level up to which iterate the tree. If `None`, goes to maximum depth.
+        is_leaf : callable, optional
+            Function to apply to a branch which returns `True` if branch is to be considered a leaf
+            (and added to the output list), else `False` (and iterated over).
+
+        Yields
+        ------
+        tuple
+            (label dict, branch or leaf)
+        """
+        return zip(*self.flatten(level=level, is_leaf=is_leaf, return_labels=True)[::-1])
 
     def map(self, f, level=None, input_label=False, is_leaf=None):
         """

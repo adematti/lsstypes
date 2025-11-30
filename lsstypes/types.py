@@ -249,7 +249,7 @@ class Mesh2CorrelationPole(ObservableLeaf):
         for name in list(kwargs):
             if name in self._values_names: pass
             elif name in ['volume']: self._values_names.append(name)
-            else: raise ValueError('{name} not unknown')
+            else: raise ValueError(f'{name} not unknown')
         self._update(num_raw=num_raw, num_shotnoise=num_shotnoise, norm=norm, nmodes=nmodes, **kwargs)
         _check_data_names(self)
         _check_data_shapes(self)
@@ -1324,7 +1324,7 @@ class Count2Correlation(LeafLikeObservableTree):
         covariance : CovarianceMatrix, optional
             Covariance matrix of the multipoles (returned if ``kw_covariance`` is provided).
             """
-        mode, kwargs = _get_project_mode(self, mode=mode, **kwargs) 
+        mode, kwargs = _get_project_mode(self, mode=mode, **kwargs)
         if mode == 'poles':
             return _project_to_poles(self, **kwargs)
         if mode == 'wedges':
@@ -1522,7 +1522,8 @@ def _matrix_bininteg(list_edges, resolution=1):
     return xin, edgesin, full_matrix
 
 
-def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_ells=(0, 2, 4), resolution=1):
+def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_ells=(0, 2, 4),
+                      kind='RR/RR', resolution=1):
     r"""
     Construct the window matrix for binning a theoretical correlation function onto observed bins.
 
@@ -1547,6 +1548,12 @@ def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_e
     out_ells : tuple of int, optional
         Output observable multipoles :math:`\ell` (default is ``(0, 2, 4)``).
 
+    kind : str, optional
+        Kind of window matrix to compute.
+        'RR/RR', apply weights from RR pair counts both in numerator and denominator
+        (such that the window matrix is essentially a rebinning matrix).
+        'RR', apply weights from RR pair counts only in numerator.
+
     resolution : int, optional
         Number of evaluation points per ``sedges`` bin for the integral (higher values yield more accurate integration).
 
@@ -1563,26 +1570,29 @@ def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_e
         Shape depends on the number of output bins and multipoles.
     """
     from scipy import special
-    sin, edgesin, binmatrix = _matrix_bininteg(sedges, resolution=resolution)  # binmatrix shape (len(sin), len(sinedges) - 1)
+    sin, edgesin, binmatrix = _matrix_bininteg(sedges, resolution=resolution)  # binmatrix shape (len(sin), len(edgesin))
     full_matrix, idxin = [], []
     if not isinstance(out_sedges, (tuple, list)): out_sedges = [out_sedges] * len(out_ells)
     for ellout, out_sedges in zip(out_ells, out_sedges):
-        mask = (sedges[None, ..., 0] >= out_sedges[:, None, ..., 0]) & (sedges[None, ..., 1] <= out_sedges[:, None, ..., 1])
+        mask = (edgesin[None, ..., 0] >= out_sedges[:, None, ..., 0]) & (edgesin[None, ..., 1] <= out_sedges[:, None, ..., 1])
         row = []
         for ellin in ells:
             integ = (special.legendre(ellout) * special.legendre(ellin)).integ()
             matrix = np.zeros_like(mask, dtype='f8')
             #print(idx)
             for iout in range(matrix.shape[0]):
-                idx = np.flatnonzero(mask[iout])
+                idx = np.flatnonzero(mask[iout])  # theory sin bins contributing to observable s bin
                 count = counts[idx]
-                count_mu = np.sum(count, axis=0)
-                mask_nonzero = count_mu != 0.
-                count_mu[~mask_nonzero] = 1.
-                tmp = count / count_mu
-                # Integration over mu
-                tmp = (2. * ellout + 1.) * np.sum(tmp * mask_nonzero * (integ(muedges[..., 1]) - integ(muedges[..., 0])), axis=-1) / np.sum(mask_nonzero * (muedges[..., 1] - muedges[..., 0]))  # normalization of mu-integral over non-empty s-rebinned RR(s, mu) bins
-                matrix[iout, idx] = tmp
+                if kind == 'RR/RR':
+                    count_mu = np.sum(count, axis=0)  # sum over theory s bins
+                    mask_nonzero = count_mu != 0.
+                    count_mu[~mask_nonzero] = 1.
+                    tmp = count / count_mu
+                    # Integration over mu
+                    tmp = np.sum(tmp * mask_nonzero * np.diff(integ(muedges), axis=-1)[..., 0], axis=-1) / np.sum(mask_nonzero * np.diff(muedges, axis=-1)[..., 0])  # normalization of mu-integral over non-empty s-rebinned RR(s, mu) bins
+                elif kind == 'RR':
+                    tmp = np.sum(count * np.diff(integ(muedges), axis=-1)[..., 0], axis=-1)
+                matrix[iout, idx] = (2. * ellout + 1.) * tmp
             matrix = matrix.dot(binmatrix)
             row.append(matrix)
         full_matrix.append(row)
@@ -1593,6 +1603,44 @@ def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_e
     full_matrix = [[matrix[:, idxin] for matrix in row] for row in full_matrix]
     full_matrix = np.block(full_matrix)
     return sin, edgesin, full_matrix
+
+
+def compute_RR2_window(RR, edges=None, ells=(0, 2, 4), ellsin=(0, 2, 4), kind='RR/RR', resolution=1):
+    r"""
+    Compute the window matrix from RR pair counts.
+
+    Parameters
+    ----------
+    RR : Count2
+        Random-random pair counts.
+
+    edges : dict, optional
+        Optional edges for 's' and 'mu' to override ``RR.edges()``.
+
+    ells : tuple of int, optional
+        Input theory multipoles :math:`\ell` (default is ``(0, 2, 4)``).
+
+    kind : str, optional
+        Kind of window matrix to compute.
+        'RR/RR', apply weights from RR pair counts both in numerator and denominator
+        (such that the window matrix is essentially a rebinning matrix).
+        'RR', apply weights from RR pair counts only in numerator.
+
+    resolution : int, optional
+        Number of evaluation points per ``sedges`` bin for the integral (higher values yield more accurate integration).
+
+    Returns
+    -------
+    window : WindowMatrix
+        Window matrix mapping theory multipoles to observed binned multipoles.
+        Shape depends on the number of output bins and multipoles.
+    """
+    if not isinstance(edges, (tuple, list)): edges = [edges] * len(ells)
+    sin, edgesin, window = _window_matrix_RR(RR.value(), RR.edges('s'), RR.edges('mu'), edges, ells=ellsin, out_ells=ells, kind=kind, resolution=resolution)
+    theory = Count2CorrelationPoles([Count2CorrelationPole(s=sin, s_edges=edgesin, value=np.zeros_like(sin), ell=ell) for ell in ellsin])
+    s = [np.mean(edges, axis=-1) for edges in edges]
+    observable = Count2CorrelationPoles([Count2CorrelationPole(s=s, s_edges=edges, value=np.zeros_like(s), RR0=RR.select(s=edges).value().sum(axis=-1), ell=ell) for ell, s, edges in zip(ells, s, edges)])
+    return WindowMatrix(value=window, observable=observable, theory=theory)
 
 
 def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw_covariance=None):
@@ -1687,10 +1735,8 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
     if return_window:
         RR = kw_window.get('RR', None)
         if RR is None: RR = estimator.get('RR')
-        ells = kw_window.get('ells', (0, 2, 4))
-        s, s_edges, window = _window_matrix_RR(RR.value(), RR.edges('s'), RR.edges('mu'), estimator.edges('s'), ells=ells, out_ells=ells, resolution=kw_window.get('resolution', 1))
-        theory = Count2CorrelationPoles([Count2CorrelationPole(s=s, s_edges=s_edges, value=np.zeros_like(s), ell=ell) for ell in ells])
-        window = WindowMatrix(value=window, observable=values.clone(value=np.zeros_like(values.value())), theory=theory)
+        window = compute_RR2_window(RR, edges=sedges, ells=kw_window.get('ells', (0, 2, 4)), resolution=kw_window.get('resolution', 1))
+        window = window.clone(observable=values.clone(value=np.zeros_like(values.value())))
         toret.append(window)
     return toret if len(toret) > 1 else toret[0]
 

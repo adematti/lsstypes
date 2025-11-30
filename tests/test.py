@@ -14,6 +14,9 @@ def test_tree():
 
     test_dir = Path('_tests')
 
+    leaf = ObservableLeaf(value=np.ones(3))
+
+
     s_edges = np.linspace(0., 100., 51)
     mu_edges = np.linspace(-1., 1., 101)
     s_edges = np.column_stack([s_edges[:-1], s_edges[1:]])
