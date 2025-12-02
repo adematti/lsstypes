@@ -455,6 +455,10 @@ def test_types(show=False):
         assert spectrum2 == spectrum
 
     correlation = get_correlation(mode='smu', seed=42)
+    RR = correlation.get('RR')
+    RR4 = RR.sum([RR] * 4)
+    assert np.allclose(RR4.value(), RR.value())
+    assert np.allclose(RR4.values('norm'), 4. * RR.values('norm'))
     correlation2 = Count2Correlation(estimator='(DD - DR - RD + RR) / RR', **{name: correlation.get(name) for name in ['DD', 'DR', 'RD', 'RR']})
     assert np.allclose(correlation2.value(), correlation.value())
     correlation2 = correlation.select(s=slice(0, None, 2))

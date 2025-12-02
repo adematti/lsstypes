@@ -976,6 +976,12 @@ class Count2(ObservableLeaf):
         if name is None or name in ['normalized_counts']:
             sumweights = sum(weights)
             return [weight / sumweights for weight in weights]
+        if name in observables[0]._coords_names:
+            sumweights = sum(weights)
+            axis = list(range(sumweights.ndim))
+            del axis[observables[0]._coords_names.index(name)]
+            axis = tuple(axis)
+            return [weight.sum(axis=axis) / sumweights.sum(axis) for weight in weights]
         if name in ['norm']:
             if input_weights:
                 sumweights = sum(weights)
@@ -1924,6 +1930,12 @@ class Count2CorrelationPole(ObservableLeaf):
         if name is None or name in ['value', 'RR0']:
             sumweights = sum(weights)
             return [weight / sumweights for weight in weights]
+        if name in observables[0]._coords_names:
+            sumweights = sum(weights)
+            axis = list(range(sumweights.ndim))
+            del axis[observables[0]._coords_names.index(name)]
+            axis = tuple(axis)
+            return [weight.sum(axis=axis) / sumweights.sum(axis) for weight in weights]
         if name in ['norm']:
             if input_weights:
                 sumweights = sum(weights)
