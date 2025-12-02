@@ -3190,7 +3190,7 @@ class CovarianceMatrix(object):
                 label = None
                 if i1 == i2 == 0: label = r'$\mathrm{{offset}} = {:d}$'.format(offset)
                 ax = lax[i2, i1]
-                if labels[i1] or labels[i2]: ax.set_title(r'${} \times {}$'.format(labels[i1], labels[i2]))
+                if labels[i1] or labels[i2]: ax.set_title(r'{}$x${}'.format(labels[i1], labels[i2]))
                 ax.plot(xx, diag, alpha=alpha, color=color, label=label)
                 ax.set_xscale(xscale)
                 ax.set_yscale(yscale)
