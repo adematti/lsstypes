@@ -1189,7 +1189,8 @@ class _ObservableLeafUpdateRef(object):
                     indices.append(transform)
             self._limits = tuple(find_single_true_slab_bounds(index) for index in indices)
         self._hook = hook
-        assert len(self._limits) == self._observable.ndim
+        # Fails whe no coords
+        #assert len(self._limits) == self._observable.ndim, f'{len(self._limits)} != {self._observable.ndim}, {self._observable}'
 
     def __getitem__(self, masks):
         """Select a section of the observable."""

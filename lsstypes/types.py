@@ -1584,6 +1584,9 @@ def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_e
         row = []
         for ellin in ells:
             integ = (special.legendre(ellout) * special.legendre(ellin)).integ()
+            diff_mu_leg = np.diff(integ(muedges), axis=-1)[..., 0]
+            diff_mu = np.diff(muedges, axis=-1)[..., 0]
+            volume = 4. / 3. * np.pi * (edgesin[:, 1]**3 - edgesin[:, 0]**3)
             matrix = np.zeros_like(mask, dtype='f8')
             #print(idx)
             for iout in range(matrix.shape[0]):
@@ -1595,9 +1598,9 @@ def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_e
                     count_mu[~mask_nonzero] = 1.
                     tmp = count / count_mu
                     # Integration over mu
-                    tmp = np.sum(tmp * mask_nonzero * np.diff(integ(muedges), axis=-1)[..., 0], axis=-1) / np.sum(mask_nonzero * np.diff(muedges, axis=-1)[..., 0])  # normalization of mu-integral over non-empty s-rebinned RR(s, mu) bins
+                    tmp = np.sum(tmp * mask_nonzero * diff_mu_leg, axis=-1) / np.sum(mask_nonzero * diff_mu)  # normalization of mu-integral over non-empty s-rebinned RR(s, mu) bins
                 elif kind == 'RR':
-                    tmp = np.sum(count * np.diff(integ(muedges), axis=-1)[..., 0], axis=-1)
+                    tmp = np.sum(count * diff_mu_leg / diff_mu, axis=-1) / volume[idx]
                 matrix[iout, idx] = (2. * ellout + 1.) * tmp
             matrix = matrix.dot(binmatrix)
             row.append(matrix)
