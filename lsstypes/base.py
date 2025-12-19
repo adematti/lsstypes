@@ -1134,16 +1134,18 @@ def _join_transform(cum_transform, transform, size=None):
         return cum_transform
 
 
+try:
+    import scipy.sparse as sp
+except ImportError:
+    sp = None
+
+
 def _concatenate_transforms(transforms, starts, size):
     # WARNING: transforms are assumed disjoint
     assert len(transforms) == len(starts)
     is2d = any(transform.ndim == 2 for transform in transforms)
     if is2d:
         transforms = [_build_matrix_from_mask(transform, size=stop - start) if transform.ndim < 2 else transform for transform, (start, stop) in zip(transforms, starts)]
-        try:
-            import scipy.sparse as sp
-        except ImportError:
-            sp = None
         if sp is None:
             def _pad(transform, start, size):
                 toret = np.zeros_like(transform, shape=(transform.shape[0], size))
@@ -1165,7 +1167,7 @@ def _concatenate_transforms(transforms, starts, size):
         return matrix
     else:
         transforms = [np.flatnonzero(transform) if not np.issubdtype(transform.dtype, np.integer) else transform for transform in transforms]
-        transforms = [start + transform for start, transform in zip(starts, transforms)]
+        transforms = [start[0] + transform for start, transform in zip(starts, transforms)]
         return np.concatenate(transforms, axis=0)
 
 
@@ -1206,7 +1208,8 @@ class _ObservableLeafUpdateRef(object):
     def select(self, center='mid_if_edges', **limits):
         """Select a range in one or more coordinates."""
         new = self._observable.copy()
-        cum_transform = None
+        cum_transform = np.arange(new.size)
+
         for iaxis, axis in enumerate(self._observable._coords_names):
             if axis not in limits: continue
 
@@ -1780,11 +1783,13 @@ class ObservableTree(object):
         if labels:  # remaining labels
             toret = {}
             for index in self_index:
-                sub_index_labels = self._branches[index]._index_labels(labels, flatten=False)
+                branch = self._branches[index]
+                if not isinstance(branch, ObservableTree):
+                    continue
+                sub_index_labels = branch._index_labels(labels, flatten=False)
                 if not sub_index_labels:
                     continue
                 toret[index] = sub_index_labels
-
         else:
             toret = {index: None for index in self_index}
         if flatten:

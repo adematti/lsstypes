@@ -117,6 +117,12 @@ def test_at():
     print(poles)
     print(poles.get(2))
 
+    bao = ObservableTree([ObservableLeaf(value=np.ones(1)) for i in [0, 1]], parameters=['qiso', 'qap'])
+    tree = ObservableTree([poles, bao], observables=['spectrum', 'bao'])
+    cov = CovarianceMatrix(value=np.eye(tree.size), observable=tree)
+    observable = tree.select(k=slice(0, None, 5))
+    cov = cov.at.observable.match(observable)
+
     at = poles.at(2)
     at._hook = lambda new, transform: new
     poles2 = at.select(k=slice(0, None, 2))
@@ -131,7 +137,6 @@ def test_at():
 
     poles2 = poles.at(2).at(k=(0.04, 0.14)).select(k=(0.1, 0.12)) #slice(0, None, 2))
     assert len(poles2.get(2).k) == 24
-
 
     poles2 = poles.at(2).clone(value=np.zeros(poles.get(2).size))
     assert np.allclose(poles2.get(2).value(), 0.)
