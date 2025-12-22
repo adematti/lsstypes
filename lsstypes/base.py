@@ -205,6 +205,8 @@ def from_state(state):
         Instantiated observable object.
     """
     _name = str(state.pop('name'))
+    if _name == 'dict':
+        return {key: from_state(value) for key, value in state.items()}
     try:
         cls = _registry[_name]
     except KeyError:
@@ -228,7 +230,19 @@ def write(filename, observable):
         Output file name.
     """
     from lsstypes import __version__
-    _write(filename, dict(_version=__version__) | observable.__getstate__(to_file=True))
+
+    def get_state(observable):
+        if isinstance(observable, dict):
+            state = dict(observable)
+            state.setdefault('name', 'dict')
+            for key, value in state.items():
+                if key != 'name':
+                    state[key] = get_state(value)
+        else:
+            state = observable.__getstate__(to_file=True)
+        return state
+
+    _write(filename, get_state(observable))
 
 
 def read(filename):
@@ -237,7 +251,7 @@ def read(filename):
 
     Parameters
     ----------
-    filename : str
+    filename : Path, str
         Input file name.
 
     Returns
@@ -1922,6 +1936,10 @@ class ObservableTree(object):
         ObservableTree
             New tree with branches matched to input observable.
         """
+        assert isinstance(observable, ObservableTree), 'input must be a tree'
+        observable_labels = observable.labels(level=None)
+        self_labels = self.labels(level=None)
+        assert observable_labels == self_labels, f'cannot match to input observable as the tree structure is different: {observable_labels} vs {self_labels}'
         new = tree_map(lambda observables: observables[1].match(observables[0]), [observable, self], is_leaf='input_not_leaf')
         for name in ['_attrs', '_meta']:
             setattr(new, name, getattr(self, name))
@@ -2277,6 +2295,7 @@ class _ObservableTreeUpdateRef(object):
 
     def match(self, observable):
         """Match coordinates to those of input tree."""
+        assert isinstance(observable, ObservableTree), 'input must be a tree'
         hook = None
         if self._hook:
             def hook(branch, transform): return branch, transform
@@ -2288,6 +2307,10 @@ class _ObservableTreeUpdateRef(object):
         else:
             index = None
         tree = _get_leaf(self._tree, index)
+        observable_labels = observable.labels(level=None)
+        self_labels = tree.labels(level=None)
+        assert observable_labels == self_labels, f'cannot match to input observable as the tree structure is different: {observable_labels} vs {self_labels}'
+
         transforms, starts = [], []
         branches, ibranches = [], []
         for ibranch, branch in enumerate(observable._branches):
@@ -3343,10 +3366,12 @@ class _ObservableGaussianLikelihoodUpdateHelper(object):
     def get(self, *args, **labels):
         """Return a likelihood with observable selected given input labels."""
         if self._axis == 0:
+            covariance = self._likelihood.covariance.at.observable.get(*args, **labels)
+            window = self._likelihood.window.at.observable.get(*args, **labels)
             observable = self._likelihood.observable.get(*args, **labels)
-        else:
-            observable = self._likelihood.window.theory.get(*args, **labels)
-        return self._select(observable)
+            return self._likelihood.clone(observable=observable, window=window, covariance=covariance)
+        window = self._likelihood.window.at.theory.get(*args, **labels)
+        return self._likelihood.clone(window=window)
 
     @property
     def at(self):

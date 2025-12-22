@@ -235,11 +235,41 @@ def test_matrix(show=False):
     covmat = types.cov([get_spectrum(size=40, seed=seed) for seed in range(100)])
     covmat.plot(show=show)
 
-    likelihood = GaussianLikelihood(observable=observable, window=winmat, covariance=covmat)
+
+def test_likelihood():
+
+    test_dir = Path('_tests')
+
+    def get_spectrum(size=40, seed=None):
+        ells = [0, 2, 4]
+        rng = np.random.RandomState(seed=seed)
+        spectrum = []
+        for ell in ells:
+            k_edges = np.linspace(0., 0.2, size + 1)
+            k_edges = np.column_stack([k_edges[:-1], k_edges[1:]])
+            k = np.mean(k_edges, axis=-1)
+            spectrum.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
+        return Mesh2SpectrumPoles(spectrum, ells=ells)
+
+    def get_bao(seed=None):
+        rng = np.random.RandomState(seed=seed)
+        alpha = rng.normal(loc=1., scale=0.01, size=2)
+        return ObservableLeaf(value=alpha)
+
+    def get_observable(seed=None):
+        return ObservableTree([get_spectrum(seed=seed), get_bao(seed=seed)], observables=['spectrum', 'bao'])
+
+    observable = get_observable(seed=42)
+    window = WindowMatrix(observable=observable, theory=observable.copy(), value=np.eye(observable.size))
+    covariance = types.cov([get_observable(seed=seed) for seed in range(100)])
+
+    likelihood = GaussianLikelihood(observable=observable, window=window, covariance=covariance)
 
     fn = test_dir / 'likelihood.h5'
     likelihood.write(fn)
     likelihood = read(fn)
+
+    likelihood = likelihood.at.observable.get('spectrum')
 
     likelihood2 = likelihood.at.observable.select(k=(0.05, 0.15))
     assert likelihood2.window.shape[0] < likelihood.window.shape[0]
@@ -250,7 +280,42 @@ def test_matrix(show=False):
     likelihood2 = likelihood.at.observable.at(2).at[...].select(k=slice(0, None, 2))
     assert likelihood2.observable.get(2).size == likelihood.observable.get(2).size // 2
 
-    chi2 = likelihood2.chi2(winmat.theory)
+    chi2 = likelihood2.chi2(window.theory)
+
+
+def test_dict():
+
+    test_dir = Path('_tests')
+
+    def get_spectrum(size=40, seed=None):
+        ells = [0, 2, 4]
+        rng = np.random.RandomState(seed=seed)
+        spectrum = []
+        for ell in ells:
+            k_edges = np.linspace(0., 0.2, size + 1)
+            k_edges = np.column_stack([k_edges[:-1], k_edges[1:]])
+            k = np.mean(k_edges, axis=-1)
+            spectrum.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
+        return Mesh2SpectrumPoles(spectrum, ells=ells)
+
+    def get_bao(seed=None):
+        rng = np.random.RandomState(seed=seed)
+        alpha = rng.normal(loc=1., scale=0.01, size=2)
+        return ObservableLeaf(value=alpha)
+
+    def get_observable(seed=None):
+        return ObservableTree([get_spectrum(seed=seed), get_bao(seed=seed)], observables=['spectrum', 'bao'])
+
+    observable = get_observable(seed=42)
+    window = WindowMatrix(observable=observable, theory=observable.copy(), value=np.eye(observable.size))
+    covariance = types.cov([get_observable(seed=seed) for seed in range(100)])
+
+    likelihood = dict(observable=observable, window=window, covariance=covariance)
+    fn = test_dir / 'dict.h5'
+    write(fn, likelihood)
+    likelihood2 = read(fn)
+    assert isinstance(likelihood2, dict)
+    assert likelihood2 == likelihood
 
 
 def test_rebin():
@@ -756,6 +821,8 @@ if __name__ == '__main__':
     test_rebin()
     test_at()
     test_matrix()
+    test_likelihood()
+    test_dict()
     test_external()
     test_readme()
     test_savetxt()
