@@ -1460,7 +1460,7 @@ def tree_map(f, tree, level=None, input_label=False, is_leaf=None):
 
     def _stop(branch, level, is_input=False):
         if isinstance(branch, list):
-            return any(_stop(b, level) for b in branch)
+            return any(_stop(b, level, is_input=is_input) for b in branch)
         return level is not None and level <= 0 or _is_leaf(branch, is_input)
 
     def _copy(branch):
@@ -2420,20 +2420,31 @@ class LeafLikeObservableTree(ObservableTree):
     @classmethod
     def _average(cls, observables, weights=None):
         # Average multiple observables
-        return tree_map(lambda observables: observables[0]._average(observables, weights=weights), observables, level=1)
+        return tree_map(lambda observables: observables[0]._average(observables, weights=weights), observables, level=1, is_leaf='input_not_leaf')
 
     @classmethod
     def sum(cls, observables, weights=None):
         """Sum multiple observables."""
         sumweight = getattr(cls, '_sumweight', None)
-        if sumweight is not None: sumweight = partial(sumweight, weights=weights)
-        else: sumweight = weights
+        if sumweight is not None:
+            _sumweight = sumweight
+            def sumweight(_, name):
+                # pass (list of) LeafLikeObservableTree as argument
+                return _sumweight(observables, name, weights=weights)
+        else:
+            sumweight = weights
         return cls._average(observables, weights=sumweight)
 
     @classmethod
     def mean(cls, observables):
         """Mean of multiple observables."""
-        return cls._average(observables, weights=getattr(cls, '_meanweight', None))
+        meanweight = getattr(cls, '_meanweight', None)
+        if meanweight is not None:
+            _meanweight = meanweight
+            def meanweight(_, name):
+                # pass (list of) LeafLikeObservableTree as argument
+                return _meanweight(observables, name, weights=weights)
+        return cls._average(observables, weights=meanweight)
 
 
 def _get_update_ref(observable):

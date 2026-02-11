@@ -549,6 +549,17 @@ def test_types(show=False):
     RR4 = RR.sum([RR] * 4)
     assert np.allclose(RR4.value(), RR.value())
     assert np.allclose(RR4.values('norm'), 4. * RR.values('norm'))
+    correlations = [correlation, get_correlation(mode='smu', seed=84)]
+    correlation2 = types.sum(correlations)
+    assert np.allclose(correlation2.get('DD').values('norm'), sum(correlation.get('DD').values('norm') for correlation in correlations))
+    assert np.allclose(correlation2.get('DD').values('counts'), sum(correlation.get('DD').values('counts') for correlation in correlations))
+    assert np.allclose(correlation2.get('RR').values('norm'), sum(correlation.get('DD').values('norm') for correlation in correlations))
+    RR2 = correlation2.get('RR').value()
+    RRav = 0.
+    for correlation in correlations:
+        RRav += correlation.get('RR').values('normalized_counts') * correlation.get('DD').values('norm')
+    RRav /= sum(correlation.get('DD').values('norm') for correlation in correlations)
+    assert np.allclose(RR2, RRav)
     correlation2 = Count2Correlation(estimator='(DD - DR - RD + RR) / RR', **{name: correlation.get(name) for name in ['DD', 'DR', 'RD', 'RR']})
     assert np.allclose(correlation2.value(), correlation.value())
     correlation2 = correlation.select(s=slice(0, None, 2))
@@ -843,6 +854,6 @@ if __name__ == '__main__':
     test_matrix()
     test_likelihood()
     test_dict()
-    test_external()
     test_readme()
     test_savetxt()
+    test_external()
