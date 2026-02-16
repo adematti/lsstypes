@@ -54,6 +54,7 @@ def test_tree():
     assert tree.labels(return_type='keys') == ['keys']
     assert tree.labels(return_type='unflatten') == {'keys': ['DD', 'DR', 'RR']}
     assert tree.labels(return_type='flatten') == [{'keys': 'DD'}, {'keys': 'DR'}, {'keys': 'RR'}]
+    assert tree.labels(return_type='flatten_values') == [('DD',), ('DR',), ('RR',)]
     assert len(tree.value()) == tree.size
     tree2 = tree.at(keys='DD').select(s=(10., 80.))
     assert tree2.get(keys='DD').shape != tree2.get(keys='DR').shape
@@ -129,9 +130,17 @@ def test_at():
         return Mesh2SpectrumPoles(poles, ells=ells)
 
     poles = get_poles()
-
-    print(poles)
-    print(poles.get(2))
+    poles.get()
+    pole = poles.get(ells=0)
+    pnew, transform = pole.at.hook(lambda new, transform: (new, transform))().match(pole)
+    assert transform.ndim == 1
+    pnew, transform = poles.at.hook(lambda new, transform: (new, transform))().match(poles)
+    assert transform.ndim == 1
+    spoles = poles.select(k=(0., 0.1))
+    pnew, transform = poles.at.hook(lambda new, transform: (new, transform))().match(spoles)
+    assert transform.ndim == 1
+    assert transform.size == spoles.size
+    assert all(p.coords('k').max() < 0.1 for p in pnew)
 
     bao = ObservableTree([ObservableLeaf(value=np.ones(1)) for i in [0, 1]], parameters=['qiso', 'qap'])
     tree = ObservableTree([poles, bao], observables=['spectrum', 'bao'])
@@ -143,8 +152,7 @@ def test_at():
     cov2 = cov.at.observable.match(observable)
     assert np.allclose(cov2.observable.value(), observable.value())
 
-    at = poles.at(2)
-    at._hook = lambda new, transform: new
+    at = poles.at.hook(lambda new, transform: new)(2)
     poles2 = at.select(k=slice(0, None, 2))
     poles2 = poles.at(0).select(k=(0., 0.1))
     assert poles2.get(0).k.size == poles.get(0).k.size // 2
@@ -175,8 +183,7 @@ def test_at():
 
     counts = get_counts()
     tree = ObservableTree([counts, counts], keys=['DD', 'RR'])
-    at = tree.at('DD')
-    at._hook = lambda new, transform: new
+    at = tree.at.hook(lambda new, transform: new)('DD')
     tree2 = at.select(mu=slice(0, None, 2))
     assert tree2.get('DD').shape[1] == tree.get('DD').shape[1] // 2
 

@@ -15,7 +15,6 @@ def _h5py_recursively_write_dict(h5file, path, dic, with_attrs=True):
             h5file[path].attrs.update(item)
             continue
         path_key = f'{path}/{key}'.rstrip('/')
-
         if isinstance(item, dict):
             # If dict has 'attrs' and other keys, it's a group with metadata
             grp = h5file.create_group(path_key, track_order=True)
@@ -751,8 +750,10 @@ class ObservableLeaf(object):
         ndim = self_coords.shape[1]
         if isinstance(limit, ObservableLeaf):
             _limit = limit.edges(axis=axis)
-            if _limit is not None: limit = _limit
-            else: limit = limit.coords(axis=axis)
+            if _limit is not None:
+                limit = _limit
+            else:
+                limit = limit.coords(axis=axis)
         selection_only = False
         if isinstance(limit, (tuple, list, slice)):  # (), slice(...), (slice(...), slice(...), ...), ()
             if isinstance(limit, slice) or not isinstance(limit[0], tuple):
@@ -770,11 +771,11 @@ class ObservableLeaf(object):
             selection_only = np.ndim(limit) == _self_coords.ndim  # coords and not edges
 
         if selection_only:
-            if isinstance(limit, list):
+            if isinstance(limit, list):  # list of slices or (lower, upper)
                 limit = [_mask_from_slice(lim, self_coords[..., iaxis].size) if isinstance(lim, slice) else lim for iaxis, lim in enumerate(limit)]
                 mask = np.logical_and.reduce(limit)
                 index = np.flatnonzero(mask)
-            else:
+            else:  # select coordinates
                 if _self_coords.ndim == 2:
 
                     def view(a):
@@ -806,7 +807,7 @@ class ObservableLeaf(object):
         self_edges = self.edges(axis=axis, default=None)
         assert self_edges is not None, 'edges must be provided to rebin the observable'
 
-        if isinstance(limit, list):
+        if isinstance(limit, list):  # slicing with rebinning
             if len(limit) == 1:
                 edges = get_1d_slice(self_edges, limit[0])
             else:
@@ -827,6 +828,13 @@ class ObservableLeaf(object):
         mask = (self_edges[None, ..., 0] >= edges[:, None, ..., 0] - tol[:, None]) & (self_edges[None, ..., 1] <= edges[:, None, ..., 1] + tol[:, None])  # (new_size, old_size) or (new_size, old_size, ndim)
         if mask.ndim >= 3:
             mask = mask.all(axis=-1)  # collapse extra dims if needed
+        if mask.sum(axis=-1).max() == 1:  # 0 or 1 True: a simple selection!
+            index, index_self = np.nonzero(mask)
+            index_self = index_self[np.argsort(index)]
+            if return_edges:
+                return index_self, self_edges[index_self]
+            return index_self
+
         shape = self.shape
 
         def multiply(m, a):
@@ -836,9 +844,8 @@ class ObservableLeaf(object):
             return m * a
 
         if undefined_weight:
-            if mask.sum(axis=-1).max() > 1:
-                import warnings
-                warnings.warn('Non-trivial rebinning requires a _binweight function to be defined')
+            import warnings
+            warnings.warn('Non-trivial rebinning requires a _binweight function to be defined')
 
         if weight is not False:
             if len(shape) > 1:
@@ -1091,6 +1098,13 @@ class _ObservableLeafUpdateHelper(object):
         self._observable = observable
         self._hook = hook
 
+    def hook(self, hook=None):
+        """
+        Set hook, callable that takes new leaf, and transform (1D or 2D array) as inputs.
+        The result is returned by the functions applied to ``observable.at``.
+        """
+        return self.__class__(observable=self._observable, hook=hook)
+
     def __getitem__(self, masks):
         select = ('__getitem__', masks)
         return _ObservableLeafUpdateRef(self._observable, select, self._hook)
@@ -1219,7 +1233,7 @@ class _ObservableLeafUpdateRef(object):
             return self._hook(new, transform=transform)
         return new
 
-    def select(self, center='mid_if_edges', **limits):
+    def select(self, center='mid_if_edges', return_transform=False, **limits):
         """Select a range in one or more coordinates."""
         new = self._observable.copy()
         cum_transform = np.arange(new.size)
@@ -1528,7 +1542,7 @@ def _get_leaf(tree, index=None):
     object
         The leaf at the specified index.
     """
-    if index is None:
+    if index is None or len(index) == 0:
         return tree
     toret = tree._branches[index[0]]
     if len(index) == 1:
@@ -1550,6 +1564,10 @@ def _replace_in_tree(tree, index, sub):
     # Replace a branch in the tree, return start/stop index of replaced branch
     start = 0
     current_tree = tree
+    if not index:
+        stop = current_tree.size
+        current_tree._branches = list(sub._branches)
+        return start, stop
     for idx in index[:-1]:
         start += sum(branch.size for branch in current_tree._branches[:idx])
         current_tree = current_tree._branches[idx]
@@ -2170,10 +2188,20 @@ class _ObservableTreeUpdateHelper(object):
         self._tree = tree
         self._hook = hook
 
+    def hook(self, hook=None):
+        """
+        Set hook, callable that takes new leaf, and transform (1D or 2D array) as inputs.
+        The result is returned by the functions applied to ``observable.at``.
+        """
+        return self.__class__(tree=self._tree, hook=hook)
+
     def __call__(self, *args, **labels):
         """Select subtree or leaf corresponding to input labels."""
         labels = _format_input_labels(self._tree, *args, **labels)
-        indices = self._tree._index_labels(labels)
+        if not labels:
+            indices = [tuple()]
+        else:
+            indices = self._tree._index_labels(labels)
         assert len(indices), f'Nothing found with {labels}'
         # Sub-tree
         return _ObservableTreeUpdateRef(self._tree, indices, hook=self._hook)
