@@ -22,11 +22,14 @@ def _h5py_recursively_write_dict(h5file, path, dic, with_attrs=True):
         else:
             # Assume it's an array-like and write as dataset
             item = np.asarray(item)
-            if isinstance(item.flat[0].item(), str):
-                dset = h5file.create_dataset(path_key, shape=item.shape, dtype=h5py.string_dtype())
-                dset[...] = item
-            else:
-                dset = h5file.create_dataset(path_key, data=item)
+            try:
+                if isinstance(item.flat[0].item(), str):
+                    dset = h5file.create_dataset(path_key, shape=item.shape, dtype=h5py.string_dtype())
+                    dset[...] = item
+                else:
+                    dset = h5file.create_dataset(path_key, data=item)
+            except Exception as exc:
+                raise ValueError(f'failed to convert {key} item {item} to hdf5 dataset') from exc
 
 
 def _h5py_recursively_read_dict(h5file, path='/'):
@@ -105,8 +108,11 @@ def _txt_recursively_write_dict(path, dic, with_attrs=True):
         else:
             # Assume it's an array-like and write as dataset
             item = np.asarray(item)
-            np.savetxt(path_key + '.txt', np.ravel(item), fmt=_npy_auto_format_specifier(item),
-                       header=f'dtype = {str(item.dtype)}\nshape = {str(item.shape)}')
+            try:
+                np.savetxt(path_key + '.txt', np.ravel(item), fmt=_npy_auto_format_specifier(item),
+                            header=f'dtype = {str(item.dtype)}\nshape = {str(item.shape)}')
+            except Exception as exc:
+                raise ValueError(f'failed to convert {key} item {item} to numpy txt') from exc
 
 
 def _txt_recursively_read_dict(path='/'):
