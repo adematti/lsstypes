@@ -85,10 +85,12 @@ def from_pycorr(correlation):
             coord_names = ['s']
         elif count.mode == 'theta':
             coord_names = ['theta']
-        meta = {name: getattr(count, name) for name in ['size1', 'size2']}
+        # check for not None (analytical pair counts)
+        attrs = {name: getattr(count, name) for name in ['size1', 'size2']}
+        if attrs['size2'] is None: attrs['size2'] = attrs['size1']  # size2 set to None in pycorr analytical auto pair counts
         coords = {coord_names[axis]: count.sepavg(axis=axis) for axis in range(count.ndim)}
         edges = {f'{coord_names[axis]}_edges': np.column_stack([count.edges[axis][:-1], count.edges[axis][1:]]) for axis in range(count.ndim)}
-        return Count2(counts=count.wcounts, norm=my_ones_like(count.wcounts) * count.wnorm, **coords, **edges, coords=coord_names, meta=meta)
+        return Count2(counts=count.wcounts, norm=my_ones_like(count.wcounts) * count.wnorm, **coords, **edges, coords=coord_names, attrs=attrs)
 
     for count_name in correlation.count_names:
         count = getattr(correlation, count_name)

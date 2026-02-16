@@ -1106,8 +1106,8 @@ class Count2Jackknife(LeafLikeObservableTree):
             with np.errstate(divide='ignore', invalid='ignore'):
                 self._data[axis] /= dcounts.sum(axis=reduce_axis)
         for name in ['size1', 'size2']:
-            if name in self._branches[0]._meta:
-                self._meta[name] = sum(count._meta[name] for count in self.get(cross='ii'))
+            if name in self._branches[0]._attrs:
+                self._attrs[name] = sum(count._attrs[name] for count in self.get(cross='ii'))
 
     @property
     def nrealizations(self):
@@ -1164,8 +1164,8 @@ class Count2Jackknife(LeafLikeObservableTree):
                 mask &= (counts._data[axis] >= self.edges(axis=axis)[..., 0]) & (counts._data[axis] <= self.edges(axis=axis)[..., 1])
                 counts._data[axis][~mask] = np.nan
         for name in ['size1', 'size2']:
-            if name in self._meta:
-                counts._meta[name] = self._meta[name] - self.get(realizations=ii, cross='ii')._meta[name]
+            if name in self._attrs:
+                counts._attrs[name] = self._attrs[name] - self.get(realizations=ii, cross='ii')._attrs[name]
         return counts
 
     def cov(self, return_type='nparray', **kwargs):

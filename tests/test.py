@@ -723,6 +723,7 @@ def test_external():
 
     pycorr = generate_pycorr()
     corr = from_pycorr(pycorr)
+    print(corr.get('DD').attrs)
     assert np.allclose(corr.value_as_leaf().value(), corr.value())
     fn = test_dir / 'corr.h5'
     corr.write(fn)
