@@ -1341,6 +1341,7 @@ class Count2Correlation(LeafLikeObservableTree):
 
     @classmethod
     def _sumweight(cls, observables, name, weights=None):
+        # weights to be applied to the leaves (Count2)
         input_weights = True
         if weights is None:
             # First is presumably DD
@@ -1349,6 +1350,12 @@ class Count2Correlation(LeafLikeObservableTree):
         if name is None or name in ['normalized_counts']:
             sumweights = sum(weights)
             return [weight / sumweights for weight in weights]
+        if name in observables[0]._coords_names:
+            sumweights = sum(weights)
+            axis = list(range(sumweights.ndim))
+            del axis[observables[0]._coords_names.index(name)]
+            axis = tuple(axis)
+            return [weight.sum(axis=axis) / sumweights.sum(axis) for weight in weights]
         if name in ['norm']:
             if input_weights:
                 sumweights = sum(weights)
