@@ -139,22 +139,56 @@ def from_triumvirate(spectrum, ells=None):
     if ells is not None: kw.update(ell=ells)
 
     if 'pk_raw' in spectrum:
+
+        def get_real(num):
+            if ells is None:
+                return num
+            ell = int(ells)
+            return num.real if ell % 2 == 0 else num.imag
+
         k_edges = get_edges(spectrum[f'kbin'].ravel())
         k = spectrum['keff']
         nmodes = spectrum['nmodes'].ravel()
-        num_raw = spectrum['pk_raw'].ravel()
-        num_shotnoise = spectrum['pk_shot'].ravel()
+        num_raw = get_real(spectrum['pk_raw'].ravel())
+        num_shotnoise = get_real(spectrum['pk_shot'].ravel())
         return Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=num_raw, num_shotnoise=num_shotnoise, nmodes=nmodes, **kw)
 
     if 'bk_raw' in spectrum:
-        k_edges = np.concatenate([get_edges(spectrum[f'k{axis + 1:d}_bin'].ravel())[:, None, :] for axis in range(2)], axis=1)
-        k = np.column_stack([spectrum[f'k{axis + 1:d}_eff'].ravel() for axis in range(2)])
-        nmodes = np.column_stack([spectrum[f'nmodes_{axis + 1:d}'].ravel() for axis in range(2)]).prod(axis=-1)
-        num_raw = spectrum['bk_raw'].ravel()
-        num_shotnoise = spectrum['bk_shot'].ravel()
+
+        def get_real(num):
+            if ells is None:
+                return num
+            ell1, ell2 = ells[:2]
+            return num.real if (ell1 + ell2) % 2 == 0 else num.imag
+
+        ndim = 2
+        k_edges = np.concatenate([get_edges(spectrum[f'k{axis + 1:d}_bin'].ravel())[:, None, :] for axis in range(ndim)], axis=1)
+        k = np.column_stack([spectrum[f'k{axis + 1:d}_eff'].ravel() for axis in range(ndim)])
+        nmodes = np.column_stack([spectrum[f'nmodes_{axis + 1:d}'].ravel() for axis in range(ndim)]).prod(axis=-1)
+        num_raw = get_real(spectrum['bk_raw'].ravel())
+        num_shotnoise = get_real(spectrum['bk_shot'].ravel())
         basis = 'sugiyama'
         if all(np.allclose(k_edges[:, axis, :], k_edges[:, 0, :]) for axis in range(k_edges.shape[1])):
             basis = 'sugiyama-diagonal'
+        if basis == 'sugiyama':
+            # if triu, make full
+            # Taken from https://github.com/MikeSWang/Triumvirate/blob/ea495d35e1330c8a5e1e52c22dea4ab51fdb5587/src/triumvirate/_arrayops.py#L789
+            nbins = (np.sqrt(8 * num_raw.size + 1) - 1) / 2.
+            if np.isclose(nbins, int(nbins)):
+                nbins = int(nbins)
+                # Reshape the flattened multipole array into a symmetric matrix.
+                triu_indices = np.triu_indices(nbins)
+
+                def get_full(value):
+                    tmp = np.zeros((nbins, nbins), dtype=value.dtype)
+                    tmp[triu_indices] = value
+                    tmp.T[triu_indices] = value
+                    return tmp.ravel()
+
+                k_edges = np.concatenate([np.column_stack([get_full(k_edges[..., i, axis]) for axis in range(ndim)])[:, None, :] for i in range(2)], axis=1)
+                k = np.column_stack([get_full(k[..., axis]) for axis in range(ndim)])
+                nmodes, num_raw, num_shotnoise = (get_full(array) for array in (nmodes, num_raw, num_shotnoise))
+
         return Mesh3SpectrumPole(k=k, k_edges=k_edges, num_raw=num_raw, num_shotnoise=num_shotnoise, nmodes=nmodes, basis=basis, **kw)
 
     raise NotImplementedError('input triumvirate object is not recognized')
