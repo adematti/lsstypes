@@ -852,8 +852,19 @@ def test_savetxt():
     assert read(fn) == spectrum
 
 
+def test_utils():
+    from lsstypes import utils
+    nobs, nbins, nparams = 1000, 50, 10
+    factor = utils.get_hartlap2007_factor(nobs, nbins)
+    assert np.allclose(factor, 0.948948948948949), factor
+    factor = utils.get_percival2014_factor(nobs, nbins, nparams)
+    assert np.allclose(factor, 1.0302691965504787), factor
+
+
+
 if __name__ == '__main__':
 
+    test_utils()
     test_tree()
     test_types()
     test_sparse()

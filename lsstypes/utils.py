@@ -240,3 +240,51 @@ def my_ones_like(x, dtype=None):
 def my_zeros_like(x, dtype=None):
     # JAX-friendly zeros_like
     return np.zeros(x.shape, dtype=dtype if dtype is not None else x.dtype)
+
+
+def get_percival2014_factor(nobs, nbins, nparams):
+    """
+    Return Percival et al. (2014) rescaling factor for the mock-based covariance matrix.
+
+    Reference
+    ---------
+    https://arxiv.org/abs/1312.4841
+
+    Parameters
+    ----------
+    nobs : int
+        Number of mocks used to estimate the covariance matrix.
+    nbins : int
+        Number of bins in the data vector.
+    nparams : int
+        Number of parameters in the model.
+    Returns
+    -------
+    factor : float
+        Rescaling factor to apply to the covariance matrix.
+    """
+    A = 2. / (nobs - nbins - 1.) / (nobs - nbins - 4.)
+    B = (nobs - nbins - 2.) / (nobs - nbins - 1.) / (nobs - nbins - 4.)
+    return (1 + B * (nbins - nparams)) / (1 + A + B * (nparams + 1))
+
+
+def get_hartlap2007_factor(nobs, nbins):
+    """
+    Return Hartlap et al. (2007) rescaling factor for the mock-based *inverse* covariance matrix.
+
+    Reference
+    ---------
+    https://arxiv.org/abs/astro-ph/0608064
+
+    Parameters
+    ----------
+    nobs : int
+        Number of mocks used to estimate the covariance matrix.
+    nbins : int
+        Number of bins in the data vector.
+    Returns
+    -------
+    factor : float
+        Rescaling factor to apply to the *inverse* covariance matrix.
+    """
+    return (nobs - nbins - 2.) / (nobs - 1.)

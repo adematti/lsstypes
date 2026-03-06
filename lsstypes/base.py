@@ -556,6 +556,11 @@ class ObservableLeaf(object):
         ----------
         axis : str or int, optional
             Name or index of coordinate.
+        center : str, optional
+            How to compute the coordinate values if edges are provided:
+            - 'mid': mean of edges
+            - 'mid_if_edges': 'mid' if edges are provided, else use coordinates as is
+            - `None`: use coordinates as is
 
         Returns
         -------
@@ -3527,3 +3532,6 @@ class GaussianLikelihood(object):
             Output file name.
         """
         return write(filename, self)
+
+
+ObservableLike = (ObservableLeaf, ObservableTree)
