@@ -1,5 +1,6 @@
 import os
 import shutil
+import ast
 from functools import partial
 
 from . import utils
@@ -56,27 +57,28 @@ def _h5py_recursively_read_dict(h5file, path='/'):
     return dic
 
 
-def _npy_auto_format_specifier(array):
+def _npy_auto_format_specifier(dtype):
     """Return a format specifier string for numpy array dtype for text output."""
-    if np.issubdtype(array.dtype, np.bool_):
+    if np.issubdtype(dtype, np.bool_):
         return '%d'
-    elif np.issubdtype(array.dtype, np.integer):
+    elif np.issubdtype(dtype, np.integer):
         return '%d'
-    elif np.issubdtype(array.dtype, np.floating):
+    elif np.issubdtype(dtype, np.floating):
         return '%.18e'
-    elif np.issubdtype(array.dtype, np.complexfloating):
+    elif np.issubdtype(dtype, np.complexfloating):
         return '%.18e+%.18ej'
-    elif np.issubdtype(array.dtype, np.str_):
-        maxlen = array.dtype.itemsize // 4  # 4 bytes per unicode char
-        return f'%{maxlen}s'
-    elif np.issubdtype(array.dtype, np.bytes_):
-        maxlen = array.dtype.itemsize
+    elif np.issubdtype(dtype, np.str_):
+        #maxlen = dtype.itemsize // 4  # 4 bytes per unicode char
+        return f'%s'
+    elif np.issubdtype(dtype, np.bytes_):
+        maxlen = dtype.itemsize
         return f'%{maxlen}s'
     else:
-        raise TypeError(f"Unsupported dtype: {array.dtype}")
+        raise TypeError(f"Unsupported dtype: {dtype}")
 
 
 import json
+
 
 class NumpyEncoder(json.JSONEncoder):
 
@@ -108,9 +110,10 @@ def _txt_recursively_write_dict(path, dic, with_attrs=True):
         else:
             # Assume it's an array-like and write as dataset
             item = np.asarray(item)
+            header = f'dtype = {str(item.dtype)}\nshape = {str(item.shape)}'
+            item = np.ravel(item)
             try:
-                np.savetxt(path_key + '.txt', np.ravel(item), fmt=_npy_auto_format_specifier(item),
-                            header=f'dtype = {str(item.dtype)}\nshape = {str(item.shape)}')
+                np.savetxt(path_key + '.txt', item, fmt=_npy_auto_format_specifier(item.dtype), header=header)
             except Exception as exc:
                 raise ValueError(f'failed to convert {key} item {item} to numpy txt') from exc
 
@@ -135,8 +138,15 @@ def _txt_recursively_read_dict(path='/'):
                 dtype = np.dtype(dtype)
                 shape = file.readline().rstrip('\r\n').replace(' ', '').replace('#shape=', '')[1:-1].split(',')
                 shape = tuple(int(s) for s in shape if s)
-            key = key[:-4] if key.endswith('.txt') else key
-            dic[key] = np.loadtxt(path_key, dtype=dtype)
+                key = key[:-4] if key.endswith('.txt') else key
+                if dtype.kind == 'U':
+                    # Treat str separately, as commas are intepreted as column delimiters
+                    dic[key] = []
+                    for line in file:
+                        dic[key].append(line.rstrip('\r\n'))
+                    dic[key] = np.array(dic[key], dtype=dtype)
+                else:
+                    dic[key] = np.loadtxt(file, dtype=dtype)
             if not shape: dic[key] = dic[key].item()
             else: dic[key] = dic[key].reshape(shape)
     return dic
@@ -479,7 +489,7 @@ def _check_data_names(self):
     data_names = set(self._data)
     unknown = data_names - known_names
     if unknown:
-        raise ValueError(f'{unknown} not unknown, expected one of {known_names}')
+        raise ValueError(f'{unknown} not known, expected one of {known_names}')
     missing = known_names - data_names - set(edges_names)
     if missing:
         raise ValueError(f'{missing} missing, expected all of {known_names - set(edges_names)}')
@@ -1637,6 +1647,16 @@ def _flatten_index_labels(indices):
     return toret
 
 
+def _numpy_to_python(obj):
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, dict):
+        return {k: _numpy_to_python(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_numpy_to_python(v) for v in obj)
+    return obj
+
+
 def _check_tree(self):
     branches_labels = []
     for branch in self._branches:
@@ -1645,22 +1665,43 @@ def _check_tree(self):
     nbranches = len(self._branches)
     for k, v in self._labels.items():
         if isinstance(v, list):
-            assert len(v) == nbranches, f'The length of labels (found {len(v):d}) must match the number of branches (got {nbranches:d})'
+            if len(v) != nbranches:
+                raise ValueError(f'The length of labels (found {len(v):d}) must match the number of branches (got {nbranches:d})')
             self._labels[k] = v
         else:
             self._labels[k] = [v] * nbranches
         if k in branches_labels:
             raise ValueError(f'Cannot use labels with same name at different levels: {k}')
+        self._labels[k] = _numpy_to_python(self._labels[k])
         self._strlabels[k] = list(map(self._label_to_str, self._labels[k]))
-        assert not any(v in self._forbidden_label_values for v in self._strlabels[k]), 'Cannot use "labels" as a label value'
-        convert = list(map(self._str_to_label, self._strlabels[k]))
-        assert convert == self._labels[k], f'Labels must be mappable to str; found label -> str -> label != identity:\n{convert} != {self._labels[k]}'
+        if any(v in self._forbidden_label_values for v in self._strlabels[k]):
+            raise ValueError('Cannot use "labels" as a label value')
+        try:
+            ast_labels = [ast.literal_eval(repr(label)) for label in self._labels[k]]
+        except ValueError as exc:
+            raise ValueError(f'Could not encode - decode label with ast.literal_eval(repr(label)) with {self._labels[k]}') from exc
+        if not all(self._eq_label(ast_label, label) for ast_label, label in zip(ast_labels, self._labels[k])):
+            raise ValueError(f'Could not encode - decode label with ast.literal_eval(repr(label)) != label, {ast_labels} != {self._labels[k]}')
+        #convert = list(map(self._str_to_label, self._strlabels[k]))
+        #assert convert == self._labels[k], f'Labels must be mappable to str; found label -> str -> label != identity:\n{convert} != {self._labels[k]}'
     uniques = []
     for ibranch in range(nbranches):
-        labels = tuple(self._strlabels[k][ibranch] for k in self._strlabels)
+        labels = self._sep_strlabels.join([self._strlabels[k][ibranch] for k in self._strlabels])
         if labels in uniques:
-            raise ValueError(f'Label {labels} is duplicated')
+            raise ValueError(f'label string {labels} is duplicated')
         uniques.append(labels)
+
+
+def _str_to_label(str, squeeze=True):
+    splits = list(str.split('_'))
+    for i, split in enumerate(splits):
+        try:
+            splits[i] = int(split)
+        except ValueError:
+            pass
+    if squeeze and len(splits) == 1:
+        return splits[0]
+    return tuple(splits)
 
 
 @register_type
@@ -1669,7 +1710,7 @@ class ObservableTree(object):
     A collection of Observable objects, supporting selection, slicing, and labeling.
     """
     _name = 'tree_base'
-    _forbidden_label_values = ('name', 'attrs', 'labels_names', 'labels_values')
+    _forbidden_label_values = ('name', 'attrs', 'labels_names', 'labels_values', 'labels_literals')
     _sep_strlabels = '-'
     _is_leaf = False
 
@@ -1735,29 +1776,19 @@ class ObservableTree(object):
         return new
 
     def _label_to_str(self, label):
+        # This is used as a simple unique identifier, to keep hdf5 file simple
         import numbers
         if isinstance(label, numbers.Number):
             return str(label)
         if isinstance(label, str):
-            for char in ['_', self._sep_strlabels]:
-                if char in label:
-                    raise ValueError(f'Label cannot contain "{char}"')
+            #for char in ['_', self._sep_strlabels]:
+            #    if char in label:
+            #        raise ValueError(f'Label cannot contain "{char}"')
             return label
         if isinstance(label, tuple):
             if len(label) == 1: raise ValueError('Tuples must be of length > 1')
             return '_'.join([self._label_to_str(lbl) for lbl in label])
-        raise NotImplementedError(f'Unable to safely cast {label} to string. Implement "_label_to_str" and "_str_to_label".')
-
-    def _str_to_label(self, str, squeeze=True):
-        splits = list(str.split('_'))
-        for i, split in enumerate(splits):
-            try:
-                splits[i] = int(split)
-            except ValueError:
-                pass
-        if squeeze and len(splits) == 1:
-            return splits[0]
-        return tuple(splits)
+        raise NotImplementedError(f'Unable to safely cast {label} to string. Implement "_label_to_str".')
 
     def _eq_label(self, label1, label2):
         # Compare input label label2 to self label1
@@ -2144,12 +2175,21 @@ class ObservableTree(object):
             state['labels'] = {key: list(value) for key, value in self._labels.items()}
             state['strlabels'] = {key: list(value) for key, value in self._strlabels.items()}
         else:
+            #state['labels_names'] = list(self._labels.keys())
             state['labels_names'] = self._sep_strlabels.join(list(self._labels.keys()))
             state['labels_values'] = []
+            eq_repr = True
             for ibranch, branch in enumerate(self._branches):
-                label = self._sep_strlabels.join([self._strlabels[k][ibranch] for k in self._labels])
-                state['labels_values'].append(label)
-                state[label] = branch.__getstate__(to_file=to_file)
+                labels = self._sep_strlabels.join([self._strlabels[k][ibranch] for k in self._labels])
+                state['labels_values'].append(labels)
+                state[labels] = branch.__getstate__(to_file=to_file)
+                # check if label can be reconstructed with _str_to_label
+                labels = [_str_to_label(label, squeeze=True) for label in labels.split(self._sep_strlabels)]
+                eq_repr = eq_repr and (len(labels) == len(self._labels)) and all(self._eq_label(label, self._labels[k][ibranch]) for label, k in zip(labels, self._labels))
+            if not eq_repr:
+                state['labels_reprs'] = []
+                for ibranch, branch in enumerate(self._branches):
+                    state['labels_reprs'].append([repr(self._labels[k][ibranch]) for k in self._labels])
         if self._meta: state['meta'] = dict(self._meta)
         if self._attrs: state['attrs'] = dict(self._attrs)
         state['name'] = self._name
@@ -2164,12 +2204,21 @@ class ObservableTree(object):
             self._labels = state['labels']
             self._strlabels = state['strlabels']
         else:  # h5py format
-            label_names = np.array(state['labels_names']).item().split(self._sep_strlabels)
+            label_names = np.array(state['labels_names'])
+            if label_names.ndim == 0:
+                # Backward-compatibility
+                label_names = label_names.item().split(self._sep_strlabels)
+            else:
+                label_names = [str(name) for name in state['labels_names']]
             label_values = list(map(lambda x: x.split(self._sep_strlabels), np.array(state['labels_values'])))
+            label_reprs = state.get('labels_reprs', None)
             self._labels, self._strlabels = {}, {}
             for i, name in enumerate(label_names):
                 self._strlabels[name] = [v[i] for v in label_values]
-                self._labels[name] = [self._str_to_label(s, squeeze=True) for s in self._strlabels[name]]
+                if label_reprs is not None:
+                    self._labels[name] = [ast.literal_eval(s[i]) for s in label_reprs]
+                else:
+                    self._labels[name] = [_str_to_label(v[i], squeeze=True) for v in label_values]
             nbranches = len(state['labels_values'])
             self._branches = []
             for ibranch in range(nbranches):
@@ -2722,7 +2771,8 @@ class WindowMatrix(object):
                 weight = [np.ones_like(leaves[0].value()) / len(leaves)] * len(leaves)
             return weight
 
-        assert all(matrix.observable.labels(level=None, return_type='flatten') == new.observable.labels(level=None, return_type='flatten') for matrix in matrices[1:])
+        for matrix in matrices[1:]:
+            assert matrix.observable._is_leaf and new.observable._is_leaf or matrix.observable.labels(level=None, return_type='flatten') == new.observable.labels(level=None, return_type='flatten')
         weights = list(map(get_sumweight, zip(*[tree_flatten(matrix.observable, level=None) for matrix in matrices])))
         weights = [np.concatenate(w, axis=0) for w in zip(*weights)]
         new._value = sum(weight[..., None] * matrix._value for matrix, weight in zip(matrices, weights))
@@ -3029,10 +3079,29 @@ class CovarianceMatrix(object):
         corrcoef = self._value / (std[..., None] * std)
         return corrcoef
 
-    def inv(self):
-        """Inverse of the covariance matrix."""
-        # FIXME
-        return np.linalg.inv(self._value)
+    def inv(self, level: int=0, check_valid: str='raise'):
+        """
+        Inverse of the covariance matrix.
+
+        Parameters
+        ----------
+        level : int, optional
+            If > 0, take the block-inverse of the covariance, at this level.
+            Sometimes more accurate than straightforward inverse, sometimes not.
+
+        Returns
+        -------
+        inverse : 2D array
+        """
+        _inv = np.linalg.inv
+        if level:
+            sizes = list(map(lambda leaf: leaf.size, tree_flatten(self.observable, level=level)))
+            cumsizes = np.cumsum([0] + sizes)
+            slices = [slice(start, stop) for start, stop in zip(cumsizes[:-1], cumsizes[1:])]
+            block_value = [[self._value[sl1, sl2] for sl2 in slices] for sl1 in slices]
+            return utils.blockinv(block_value, inv=_inv, check_valid=check_valid)
+        else:
+            return utils.inv(self._value, inv=_inv, check_valid=check_valid)
 
     def copy(self):
         """Return a copy of the covariance matrix (arrays not copied)."""
@@ -3104,7 +3173,8 @@ class CovarianceMatrix(object):
                 weight = [np.ones_like(leaves[0].value()) / len(leaves)] * len(leaves)
             return weight
 
-        assert all(matrix.observable.labels(level=None, return_type='flatten') == new.observable.labels(level=None, return_type='flatten') for matrix in matrices[1:])
+        for matrix in matrices[1:]:
+            assert matrix.observable._is_leaf and new.observable._is_leaf or matrix.observable.labels(level=None, return_type='flatten') == new.observable.labels(level=None, return_type='flatten')
         weights = list(map(get_sumweight, zip(*[tree_flatten(matrix.observable, level=None) for matrix in matrices])))
         weights = [np.concatenate(w, axis=0) for w in zip(*weights)]
         weights2 = [weight[..., None] * weight for weight in weights]
@@ -3534,4 +3604,4 @@ class GaussianLikelihood(object):
         return write(filename, self)
 
 
-ObservableLike = (ObservableLeaf, ObservableTree)
+ObservableLike = ObservableLeaf | ObservableTree

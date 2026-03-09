@@ -1,6 +1,8 @@
 import os
+import warnings
 
 import numpy as np
+from numpy.linalg import LinAlgError
 
 
 def mkdir(dirname):
@@ -125,38 +127,27 @@ def plot_matrix(matrix, x1=None, x2=None, xlabel1=None, xlabel2=None, barlabel=N
     ----------
     matrix : array, list of lists of arrays
         Matrix, organized per-block.
-
     x1 : array, list of arrays, default=None
         Optionally, coordinates corresponding to the first axis of the matrix, organized per-block.
-
     x2 : array, list of arrays, default=None
         Optionally, coordinates corresponding to the second axis of the matrix, organized per-block.
-
     xlabel1 : str, list of str, default=None
         Optionally, label(s) corresponding to the first axis of the matrix, organized per-block.
-
     xlabel2 : str, list of str, default=None
         Optionally, label(s) corresponding to the second axis of the matrix, organized per-block.
-
     barlabel : str, default=None
         Optionally, label for the color bar.
-
     label1 : str, list of str, default=None
         Optionally, label(s) for the first observable(s) in the matrix, organized per-block.
-
     label2 : str, list of str, default=None
         Optionally, label(s) for the second observable(s) in the matrix, organized per-block.
-
     figsize : int, tuple, default=None
         Optionally, figure size.
-
     norm : matplotlib.colors.Normalize, default=None
         Scales the matrix to the canonical colormap range [0, 1] for mapping to colors.
         By default, the matrix range is mapped to the color bar range using linear scaling.
-
     labelsize : int, default=None
         Optionally, size for labels.
-
     fig : matplotlib.figure.Figure, default=None
         Optionally, a figure with at least as many axes as blocks in ``covariance``.
 
@@ -242,7 +233,110 @@ def my_zeros_like(x, dtype=None):
     return np.zeros(x.shape, dtype=dtype if dtype is not None else x.dtype)
 
 
-def get_percival2014_factor(nobs, nbins, nparams):
+def _check_valid_inv(mat, invmat, rtol=1e-03, atol=1e-03, check_valid='raise'):
+    """
+    Check input array ``mat`` and ``invmat`` are matrix inverse within relative difference ``rtol`` and absolute difference ``atol``.
+    If inversion is inaccurate, and ``check_valid`` is:
+
+    - 'raise': raise a :class:`LinAlgError`
+    - 'warn': issue a warning
+    - 'ignore': ignore
+
+    """
+    if check_valid == 'ignore':
+        return
+    tmp = mat.dot(invmat)
+    ref = np.eye(tmp.shape[0], dtype=tmp.dtype)
+    if not np.allclose(tmp, ref, rtol=rtol, atol=atol):
+        msg = 'Numerically inaccurate inverse matrix, max absolute diff {:.6f}.'.format(np.max(np.abs(tmp - ref)))
+        if check_valid == 'raise':
+            raise LinAlgError(msg)
+        elif check_valid == 'warn':
+            warnings.warn(msg)
+        elif check_valid != 'ignore':
+            raise ValueError('check_valid must be one of ["raise", "warn", "ignore"]')
+
+
+def inv(mat, inv=np.linalg.inv, check_valid='raise'):
+    """
+    Return inverse of input 2D or 0D (scalar) array ``mat``.
+
+    Parameters
+    ----------
+    mat : 2D array, scalar
+        Input matrix to invert.
+    inv : callable, default=np.linalg.inv
+        Function that takes in 2D array and returns its inverse.
+    check_valid : str, bool, default='raise'
+        If inversion is inaccurate, and ``check_valid`` is:
+
+        - 'raise': raise a :class:`LinAlgError`
+        - 'warn': issue a warning
+        - 'ignore': ignore
+
+    Returns
+    -------
+    toret : 2D array, scalar
+        Inverse of ``mat``.
+    """
+    mat = np.asarray(mat)
+    if mat.ndim == 0:
+        return 1. / mat
+    toret = None
+    try:
+        toret = inv(mat)
+    except LinAlgError as exc:
+        if check_valid == 'raise':
+            raise exc
+        elif check_valid == 'warn':
+            warnings.warn('Numerically inaccurate inverse matrix')
+        elif check_valid != 'ignore':
+            raise ValueError('check_valid must be one of ["raise", "warn", "ignore"]')
+
+    _check_valid_inv(mat, toret, check_valid=check_valid)
+    return toret
+
+
+def blockinv(blocks, inv=np.linalg.inv, check_valid: str='raise'):
+    """
+    Return inverse of input ``blocks`` matrix.
+
+    Parameters
+    ----------
+    blocks : list of list of 2D arrays
+        Input matrix to invert, in the form of blocks, e.g. ``[[A, B], [C, D]]``.
+    inv : callable, default=np.linalg.inv
+        Function that takes in 2D array and returns its inverse.
+    check_valid : str, bool, default='raise'
+        If inversion is inaccurate, and ``check_valid`` is:
+
+        - 'raise': raise a :class:`LinAlgError`
+        - 'warn': issue a warning
+        - 'ignore': ignore
+
+    Returns
+    -------
+    inverse : 2D array
+        Inverse of ``blocks`` matrix.
+    """
+    A = blocks[0][0]
+    if (len(blocks), len(blocks[0])) == (1, 1):
+        return inv(A)
+    B = np.block(blocks[0][1:])
+    C = np.block([b[0].T for b in blocks[1:]]).T
+    invD = blockinv([b[1:] for b in blocks[1:]], inv=inv)
+
+    def dot(*args):
+        return np.linalg.multi_dot(args)
+
+    invShur = inv(A - dot(B, invD, C))
+    inverse = np.block([[invShur, -dot(invShur, B, invD)], [-dot(invD, C, invShur), invD + dot(invD, C, invShur, B, invD)]])
+    mat = np.block(blocks)
+    _check_valid_inv(mat, inverse, check_valid=check_valid)
+    return inverse
+
+
+def get_percival2014_factor(nobs: int, nbins: int, nparams: int):
     """
     Return Percival et al. (2014) rescaling factor for the mock-based covariance matrix.
 
@@ -268,7 +362,7 @@ def get_percival2014_factor(nobs, nbins, nparams):
     return (1 + B * (nbins - nparams)) / (1 + A + B * (nparams + 1))
 
 
-def get_hartlap2007_factor(nobs, nbins):
+def get_hartlap2007_factor(nobs: int, nbins: int):
     """
     Return Hartlap et al. (2007) rescaling factor for the mock-based *inverse* covariance matrix.
 

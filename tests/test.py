@@ -7,7 +7,7 @@ import numpy as np
 import lsstypes as types
 from lsstypes import ObservableLeaf, ObservableTree, read, write
 from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole, Mesh3SpectrumPoles, Mesh3CorrelationPole, Mesh3CorrelationPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
-from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood
+from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood, ObservableLike
 
 
 def test_tree():
@@ -15,6 +15,7 @@ def test_tree():
     test_dir = Path('_tests')
 
     leaf = ObservableLeaf(value=np.ones(3))
+    assert isinstance(leaf, ObservableLike)
 
     s_edges = np.linspace(0., 100., 51)
     mu_edges = np.linspace(-1., 1., 101)
@@ -51,6 +52,8 @@ def test_tree():
     assert len(leaf4.coords('s')) == 40
 
     tree = ObservableTree(leaves, keys=labels)
+    assert isinstance(tree, ObservableLike)
+
     assert tree.labels(return_type='keys') == ['keys']
     assert tree.labels(return_type='unflatten') == {'keys': ['DD', 'DR', 'RR']}
     assert tree.labels(return_type='flatten') == [{'keys': 'DD'}, {'keys': 'DR'}, {'keys': 'RR'}]
@@ -114,6 +117,51 @@ def test_tree():
     poles3 = poles.match(poles2)
     assert poles3.labels() == poles2.labels()
     assert np.all(poles3.value() == poles2.value())
+
+
+
+def test_io():
+    test_dir = Path('_tests')
+    def test_write_read(tree):
+        fn = test_dir / 'tree.h5'
+        write(fn, tree)
+        tree2 = read(fn)
+        assert tree2 == tree
+        fn = test_dir / 'tree.txt'
+        write(fn, tree)
+        tree2 = read(fn)
+        assert tree2 == tree
+
+    rng = np.random.RandomState(seed=42)
+    k1 = np.linspace(0., 0.2, 21)
+    k2 = np.linspace(0., 0.2, 21)
+    spectrum = rng.uniform(size=(k1.size, k2.size))
+    leaf = ObservableLeaf(spectrum=spectrum, k1=k1, k2=k2, coords=['k1', 'k2'], attrs=dict(los='x'))
+    tree = ObservableTree([leaf, leaf], observable=['spectrum', 'spectrum_recon'])
+    test_write_read(tree)
+    tree = ObservableTree([leaf, leaf], observable=['spectrum', (3, '_recon')], wa_orders=[0, 2])
+    test_write_read(tree)
+
+    a = np.linspace(0., 1., 10)
+    a = a - 1j * a
+    fn = test_dir / 'test.txt'
+    np.savetxt(fn, a, fmt='%.4f%+.4fj')
+    a = np.loadtxt(fn, dtype=np.complex128)
+
+    def get_spectrum(seed=None):
+        ells = [0, 2, 4]
+        rng = np.random.RandomState(seed=seed)
+        poles = []
+        for ell in ells:
+            k_edges = np.linspace(0., 0.2, 41)
+            k_edges = np.column_stack([k_edges[:-1], k_edges[1:]])
+            k = np.mean(k_edges, axis=-1)
+            poles.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size) + 1j * rng.uniform(size=k.size)))
+        return Mesh2SpectrumPoles(poles, ells=ells, attrs={'zeff': np.float64(0.8)})
+
+    spectrum = get_spectrum()
+    spectrum.write(fn)
+    assert read(fn) == spectrum
 
 
 def test_at():
@@ -252,6 +300,7 @@ def test_matrix(show=False):
     value = rng.uniform(0., 1., size=(40 * 3, 40 * 3))
     covmat = CovarianceMatrix(value=value, observable=observable)
 
+    assert np.allclose(covmat.inv(level=1), covmat.inv(level=0))
     assert covmat.std().size == covmat.shape[0]
     assert covmat.corrcoef().shape == covmat.shape
     covmat.plot(show=show)
@@ -288,7 +337,7 @@ def test_likelihood():
 
     observable = get_observable(seed=42)
     window = WindowMatrix(observable=observable, theory=observable.copy(), value=np.eye(observable.size))
-    covariance = types.cov([get_observable(seed=seed) for seed in range(100)])
+    covariance = types.cov([get_observable(seed=seed) for seed in range(500)])
 
     likelihood = GaussianLikelihood(observable=observable, window=window, covariance=covariance)
 
@@ -826,32 +875,6 @@ def test_readme():
         rebinned.write('rebinned.hdf5')
 
 
-def test_savetxt():
-    test_dir = Path('_tests')
-    test_dir.mkdir(exist_ok=True)
-
-    a = np.linspace(0., 1., 10)
-    a = a - 1j * a
-    fn = test_dir / 'test.txt'
-    np.savetxt(fn, a, fmt='%.4f%+.4fj')
-    a = np.loadtxt(fn, dtype=np.complex128)
-
-    def get_spectrum(seed=None):
-        ells = [0, 2, 4]
-        rng = np.random.RandomState(seed=seed)
-        poles = []
-        for ell in ells:
-            k_edges = np.linspace(0., 0.2, 41)
-            k_edges = np.column_stack([k_edges[:-1], k_edges[1:]])
-            k = np.mean(k_edges, axis=-1)
-            poles.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size) + 1j * rng.uniform(size=k.size)))
-        return Mesh2SpectrumPoles(poles, ells=ells, attrs={'zeff': np.float64(0.8)})
-
-    spectrum = get_spectrum()
-    spectrum.write(fn)
-    assert read(fn) == spectrum
-
-
 def test_utils():
     from lsstypes import utils
     nobs, nbins, nparams = 1000, 50, 10
@@ -859,7 +882,6 @@ def test_utils():
     assert np.allclose(factor, 0.948948948948949), factor
     factor = utils.get_percival2014_factor(nobs, nbins, nparams)
     assert np.allclose(factor, 1.0302691965504787), factor
-
 
 
 if __name__ == '__main__':
@@ -874,5 +896,5 @@ if __name__ == '__main__':
     test_likelihood()
     test_dict()
     test_readme()
-    test_savetxt()
+    test_io()
     test_external()
