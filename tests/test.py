@@ -633,10 +633,11 @@ def test_types(show=False):
     assert value.get((1. / 2., 2. / 3.)) == value.get('w2')
 
     correlation = get_correlation_jackknife(mode='smu')
-    value, covariance, window = correlation.project(ells=[0, 2, 4], kw_covariance=dict(), kw_window=dict())
+    value, covariance, window = correlation.project(ells=[0, 2, 4], kw_covariance=dict(), kw_window=dict(resolution=2))
     value.plot(show=show)
     covariance.plot(show=show)
     window.plot(show=show)
+    assert window.shape[1] == 2 * window.shape[0]
 
     value, covariance = correlation.project(wedges=[(-1., -2. / 3.), (1. / 2., 2. / 3.)], kw_covariance=dict())
     value.plot(show=show)

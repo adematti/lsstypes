@@ -1486,7 +1486,7 @@ def _matrix_bininteg(list_edges, resolution=1):
     Parameters
     ----------
     list_edges : list of array-like
-        List of bin edges for each axis (e.g., separation, k, etc.).
+        List of output bin edges for each axis (e.g., separation, k, etc.).
     resolution : int, default=1
         Number of evaluation points per bin for the integral (higher = more accurate).
 
@@ -1502,8 +1502,14 @@ def _matrix_bininteg(list_edges, resolution=1):
     resolution = int(resolution)
     if resolution <= 0:
         raise ValueError('resolution must be a strictly positive integer')
-    if not isinstance(list_edges, (tuple, list)): list_edges = [list_edges]
-
+    if not isinstance(list_edges, (tuple, list)):
+        list_edges = [list_edges]
+    list_edges = list(list_edges)
+    for i, edges in enumerate(list_edges):
+        edges = np.asarray(edges)
+        if edges.ndim != 2 or edges.shape[1] != 2:
+            raise ValueError("Each entry of list_edges must have shape (nbins, 2)")
+        list_edges[i] = edges
     step = min(np.diff(edges, axis=-1).min() for edges in list_edges) / resolution
     start, stop = min(np.min(edges) for edges in list_edges), max(np.max(edges) for edges in list_edges)
     edgesin = np.arange(start, stop + step / 2., step)
@@ -1513,15 +1519,15 @@ def _matrix_bininteg(list_edges, resolution=1):
     matrices = []
     for edges in list_edges:
         x, w = [], []
-        for ibin, limit in enumerate(edgesin):
+        for ibin, limit in enumerate(edges):
             edge = np.linspace(*limit, resolution + 1)
             #x.append((edge[1:] + edge[:-1]) / 2.)
             x.append(3. / 4. * (edge[1:]**4 - edge[:-1]**4) / (edge[1:]**3 - edge[:-1]**3))
-            row = np.zeros(len(edgesin) * resolution, dtype='f8')
+            row = np.zeros(len(edges) * resolution, dtype='f8')
             tmp = edge[1:]**3 - edge[:-1]**3
             row[ibin * resolution:(ibin + 1) * resolution] = tmp / tmp.sum()
             w.append(row)
-        matrices.append(np.column_stack(w).dot(_matrix_lininterp(np.concatenate(x), xin)))  # linear interpolation * integration weights
+        matrices.append(np.array(w).dot(_matrix_lininterp(np.concatenate(x), xin)))  # linear interpolation * integration weights
     full_matrix = []
     for i, mat in enumerate(matrices):
         row = []
@@ -1583,11 +1589,11 @@ def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_e
         Shape depends on the number of output bins and multipoles.
     """
     from scipy import special
-    sin, edgesin, binmatrix = _matrix_bininteg(sedges, resolution=resolution)  # binmatrix shape (len(sin), len(edgesin))
+    sin, edgesin, binmatrix = _matrix_bininteg(sedges, resolution=resolution)  # binmatrix shape (len(sedges), len(edgesin))
     full_matrix, idxin = [], []
     if not isinstance(out_sedges, (tuple, list)): out_sedges = [out_sedges] * len(out_ells)
     for ellout, out_sedges in zip(out_ells, out_sedges):
-        mask = (edgesin[None, ..., 0] >= out_sedges[:, None, ..., 0]) & (edgesin[None, ..., 1] <= out_sedges[:, None, ..., 1])
+        mask = (sedges[None, ..., 0] >= out_sedges[:, None, ..., 0]) & (sedges[None, ..., 1] <= out_sedges[:, None, ..., 1])
         row = []
         for ellin in ells:
             integ = (special.legendre(ellout) * special.legendre(ellin)).integ()
@@ -1597,7 +1603,7 @@ def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_e
             matrix = np.zeros_like(mask, dtype='f8')
             #print(idx)
             for iout in range(matrix.shape[0]):
-                idx = np.flatnonzero(mask[iout])  # theory sin bins contributing to observable s bin
+                idx = np.flatnonzero(mask[iout])  # theory sedges bins contributing to observable s bin
                 count = counts[idx]
                 if kind == 'RR/RR':
                     count_mu = np.sum(count, axis=0)  # sum over theory s bins
