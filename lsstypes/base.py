@@ -1587,7 +1587,8 @@ def _replace_in_tree(tree, index, sub):
     current_tree = tree
     if not index:
         stop = current_tree.size
-        current_tree._branches = list(sub._branches)
+        assert isinstance(sub, ObservableTree), f'cannot replace tree {current_tree} with leaf {sub}'
+        current_tree.__setstate__(sub.__getstate__())
         return start, stop
     for idx in index[:-1]:
         start += sum(branch.size for branch in current_tree._branches[:idx])

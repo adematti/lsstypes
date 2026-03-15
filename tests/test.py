@@ -178,6 +178,9 @@ def test_at():
         return Mesh2SpectrumPoles(poles, ells=ells)
 
     poles = get_poles()
+    pole = poles.at().get(ells=[2])
+    assert pole.ells == [2]
+    assert np.allclose(pole.value(), poles.get(ells=2).value())
     poles.get()
     pole = poles.get(ells=0)
     pnew, transform = pole.at.hook(lambda new, transform: (new, transform))().match(pole)
