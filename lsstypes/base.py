@@ -3346,7 +3346,7 @@ class CovarianceMatrix(object):
     @utils.plotter
     def plot_slice(self, indices, level=None, color='C0', label=None, xscale='linear', yscale='log', fig=None):
         """
-        Plot a slice of the covariance matrix along the specified indices.
+        Plot a slice of the covariance matrix at the specified indices, orthogonal to the diagonal.
 
         Parameters
         ----------
@@ -3417,10 +3417,16 @@ class CovarianceMatrix(object):
                 iidx = idx
                 if np.issubdtype(idx.dtype, np.floating):
                     iidx = np.abs(x[i1] - idx).argmin()
-                v = np.take(value, iidx, axis=0)
-                if yscale == 'log': value = np.abs(v)
-                xx = x[i2]
+                # Orthogonal to diagonal
+                index1 = np.arange(max(0, 2 * iidx - (value.shape[0] - 1)), min(value.shape[0] - 1, 2 * iidx) + 1)
+                index2 = 2 * iidx - index1
+                v = value[index1, index2]
+                if yscale == 'log':
+                    v = np.abs(v)
+                # signed separation from the diagonal
+                xx = x[i2][index2] - x[i1][index1]
                 ax.plot(xx, v, alpha=alphas[ix], color=color, label=label if ix == 0 else None)
+
             if labels[i1] or labels[i2]: ax.set_title(r'${} \times {}$'.format(labels[i1], labels[i2]))
             ax.set_xscale(xscale)
             ax.set_yscale(yscale)
