@@ -2276,6 +2276,18 @@ class _ObservableTreeUpdateRef(object):
         self._indices = indices
         self._hook = hook
 
+    def replace(self, branch):
+        """Return a copy of the tree, with updated branch."""
+        if self._hook is not None:
+            raise NotImplementedError('hook not implemented for clone')
+        new = self._tree.copy()
+        for index in (self._indices if self._indices is not None else [None]):
+            if index is None:
+                new = branch
+            else:
+                start, stop = _replace_in_tree(new, index, branch)
+        return new
+
     def clone(self, **kwargs):
         """
         Return a copy of the tree, with updated values.
@@ -2301,7 +2313,8 @@ class _ObservableTreeUpdateRef(object):
         new = self._tree.copy()
         for index in (self._indices if self._indices is not None else [None]):
             branch = _get_leaf(self._tree, index)
-            sub = branch.map(f, level=level, input_label=input_label)
+            is_leaf = 'input_not_leaf' if isinstance(branch, ObservableTree) else None
+            sub = tree_map(f, branch, level=level, input_label=input_label, is_leaf=is_leaf)
             if index is None:
                 new = sub
             else:
@@ -2573,6 +2586,18 @@ class _LeafLikeObservableTreeUpdateRef(object):
         """Select a section of the observable."""
         self._indices = None
         return _ObservableTreeUpdateRef.__getitem__(self, masks)
+
+    def replace(self, branch):
+        """Return a copy of the tree, with updated branch."""
+        return _ObservableTreeUpdateRef.replace(self, branch)
+
+    def clone(self, **kwargs):
+        """
+        Return a copy of the tree, with updated values.
+        One can provide for each kwargs entry either a list of values,
+        with ``None`` for the branches not to be updated, or a (concatenated) numpy array.
+        """
+        return _ObservableTreeUpdateRef.clone(self, **kwargs)
 
     def select(self, **limits):
         """Select a range in one or more coordinates."""

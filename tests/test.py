@@ -182,6 +182,13 @@ def test_at():
     assert pole.ells == [2]
     assert np.allclose(pole.value(), poles.get(ells=2).value())
     poles.get()
+    pole2 = poles.get(ells=2)
+    pole2 = pole2.clone(value=pole2.value() + 100.)
+    poles2 = poles.at(ells=2).map(lambda pole: pole2)
+    assert np.allclose(poles2.get(ells=2).value(), pole2.value())
+    poles2 = poles.at(ells=2).replace(pole2)
+    assert np.allclose(poles2.get(ells=2).value(), pole2.value())
+
     pole = poles.get(ells=0)
     pnew, transform = pole.at.hook(lambda new, transform: (new, transform))().match(pole)
     assert transform.ndim == 1
