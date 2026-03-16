@@ -2,6 +2,7 @@ import os
 import shutil
 import ast
 from functools import partial
+import warnings
 
 from . import utils
 
@@ -770,7 +771,7 @@ class ObservableLeaf(object):
         self_coords = _self_coords[(Ellipsis,) + (None,) * (2 - _self_coords.ndim)]
         ndim = self_coords.shape[1]
         if isinstance(limit, ObservableLeaf):
-            _limit = limit.edges(axis=axis)
+            _limit = limit.edges(axis=axis, default=None)
             if _limit is not None:
                 limit = _limit
             else:
@@ -865,7 +866,6 @@ class ObservableLeaf(object):
             return m * a
 
         if undefined_weight:
-            import warnings
             warnings.warn('Non-trivial rebinning requires a _binweight function to be defined')
 
         if weight is not False:
@@ -1619,8 +1619,17 @@ def _format_input_labels(self, *args, **labels):
     """
     if args:
         assert not labels, 'Cannot provide both list and dict of labels'
-        assert len(args) == 1 and len(self._labels) == 1, 'Args mode available only for one label entry'
-        labels = {next(iter(self._labels)): args[0]}
+        assert len(args) == 1
+        args = args[0]
+        if isinstance(args, list) and all(isinstance(arg, dict) for arg in args):
+            # List of {label_name: label_values}
+            labels = list(args)
+        else:
+            assert len(self._labels) == 1, 'Args mode available only for one label entry'
+            label_name = next(iter(self._labels))
+            #if isinstance(args, list):
+            #    warnings.warn(f'to specify a list of label values, pass {label_name}={args}')
+            labels = {label_name: args}
     return labels
 
 
@@ -1653,7 +1662,7 @@ def _numpy_to_python(obj):
         return obj.item()
     if isinstance(obj, dict):
         return {k: _numpy_to_python(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
+    if isinstance(obj, (list, tuple, set, frozenset)):
         return type(obj)(_numpy_to_python(v) for v in obj)
     return obj
 
@@ -1839,34 +1848,39 @@ class ObservableTree(object):
         raise AttributeError(name)
 
     def _index_labels(self, labels, flatten=True):
-        labels = dict(labels)
-        # Follows the original order
-        def find(vselect, k):
-            if isinstance(vselect, list):
-                return sum((find(vs, k) for vs in vselect), start=[])
-            if isinstance(vselect, str):
-                return [i for i, v in enumerate(self._strlabels[k]) if v == vselect]
-            return [i for i, v in enumerate(self._labels[k]) if self._eq_label(v, vselect)]
-
-        self_index = list(range(len(self._branches)))
-        # First find labels in current level, keeping original order
-        for k in self._labels:
-            if k in labels:
-                vselect = labels.pop(k)
-                _indices = find(vselect, k)
-                self_index = [index for index in self_index if index in _indices]
-        if labels:  # remaining labels
+        if isinstance(labels, list):
             toret = {}
-            for index in self_index:
-                branch = self._branches[index]
-                if not isinstance(branch, ObservableTree):
-                    continue
-                sub_index_labels = branch._index_labels(labels, flatten=False)
-                if not sub_index_labels:
-                    continue
-                toret[index] = sub_index_labels
+            for label in labels:
+                toret.update(self._index_labels(label, flatten=False))
         else:
-            toret = {index: None for index in self_index}
+            labels = dict(labels)
+            # Follows the original order
+            def find(vselect, k):
+                if isinstance(vselect, list):
+                    return sum((find(vs, k) for vs in vselect), start=[])
+                if isinstance(vselect, str):
+                    return [i for i, v in enumerate(self._strlabels[k]) if v == vselect]
+                return [i for i, v in enumerate(self._labels[k]) if self._eq_label(v, vselect)]
+
+            self_index = list(range(len(self._branches)))
+            # First find labels in current level, keeping original order
+            for k in self._labels:
+                if k in labels:
+                    vselect = labels.pop(k)
+                    _indices = find(vselect, k)
+                    self_index = [index for index in self_index if index in _indices]
+            if labels:  # remaining labels
+                toret = {}
+                for index in self_index:
+                    branch = self._branches[index]
+                    if not isinstance(branch, ObservableTree):
+                        continue
+                    sub_index_labels = branch._index_labels(labels, flatten=False)
+                    if not sub_index_labels:
+                        continue
+                    toret[index] = sub_index_labels
+            else:
+                toret = {index: None for index in self_index}
         if flatten:
             toret = _flatten_index_labels(toret)
         return toret
@@ -1875,12 +1889,19 @@ class ObservableTree(object):
         """
         Return subtree or leaf corresponding to input labels.
 
+        Note
+        ----
+        If a list of dictionary is provided, the output respects the input order.
+        Else, the order of the current tree (and subtress) is preserved.
+
         Parameters
         ----------
-        *args : tuple
-            Positional label arguments (only if one label entry).
+        *args : tuple, optional
+            Positional label arguments:
+            - one label value is there is one label entry in current tree
+            - a list of dictionaries [{'label_name1': 'label_value1', 'label_name2': 'label_value2'}, ...]
         **labels : dict
-            Keyword label arguments.
+            Keyword label arguments, label_name1=label_value1 (or list of label_value1)
 
         Returns
         -------
@@ -1888,7 +1909,7 @@ class ObservableTree(object):
             The matching subtree or leaf.
         """
         labels = _format_input_labels(self, *args, **labels)
-        isscalar = not any(isinstance(v, list) for v in labels.values())
+        isscalar = isinstance(labels, dict) and not any(isinstance(v, list) for v in labels.values())
         indices = self._index_labels(labels, flatten=False)
         if len(indices) == 0:
             raise ValueError(f'{labels} not found')
@@ -1903,7 +1924,7 @@ class ObservableTree(object):
             for ibranch, branch in enumerate(tree._branches):
                 if ibranch in indices:
                     if indices[ibranch] is not None:
-                        branch = get_subtree(tree, indices[ibranch])
+                        branch = get_subtree(branch, indices[ibranch])
                     branches.append(branch)
                     ibranches.append(ibranch)
             new = tree.copy()
@@ -1998,8 +2019,8 @@ class ObservableTree(object):
             New tree matched to input observable.
         """
         assert isinstance(observable, ObservableTree), 'input must be a tree'
-        new = tree_map(lambda observables, label: observables[1].match(observables[0]),
-                       [observable, self], input_label=True, is_leaf='input_not_leaf')
+        new = tree_map(lambda observables: observables[1].match(observables[0]),
+                       [observable, self], is_leaf='input_not_leaf')
         for name in ['_attrs', '_meta']:
             setattr(new, name, getattr(self, name))
         return new
@@ -2297,13 +2318,29 @@ class _ObservableTreeUpdateRef(object):
         if self._hook is not None:
             raise NotImplementedError('hook not implemented for clone')
         new = self._tree.copy()
-        for index in (self._indices if self._indices is not None else [None]):
+
+        def _get_values(kwargs, ibranch, start, stop, shape=None):
+            kw = dict()
+            for name, value in kwargs.items():
+                if isinstance(value, (tuple, list)):
+                    v = value[ibranch]
+                else:
+                    v = value[start:stop]
+                    if shape is not None: v = v.reshape(shape)
+                if v is not None: kw[name] = v
+            return kw
+
+        start = 0
+        for ibranch, index in enumerate((self._indices if self._indices is not None else [None])):
             branch = _get_leaf(self._tree, index)
-            sub = branch.clone(**kwargs)
+            stop = start + branch.size
+            shape = branch.shape if branch._is_leaf else None
+            sub = branch.clone(**_get_values(kwargs, ibranch, start, stop, shape=shape))
             if index is None:
                 new = sub
             else:
-                start, stop = _replace_in_tree(new, index, sub)
+                _replace_in_tree(new, index, sub)
+            start = stop
         return new
 
     def map(self, f, level=None, input_label=False):
@@ -2330,7 +2367,7 @@ class _ObservableTreeUpdateRef(object):
         for index in (self._indices if self._indices is not None else [None]):
             branch = _get_leaf(self._tree, index)
             _labels = _format_input_labels(branch, *args, **labels)
-            sub = branch.get(**_labels)
+            sub = branch.get(**_labels if isinstance(_labels, dict) else _labels)
             if index is None:
                 new = sub
                 start, stop = 0, branch.size

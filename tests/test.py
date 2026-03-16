@@ -63,10 +63,10 @@ def test_tree():
     assert tree2.get(keys='DD').shape != tree2.get(keys='DR').shape
     tree2 = tree.select(s=(10., 80.))
     assert tree2.get(keys='DD').shape == tree2.get(keys='DR').shape
-    assert tree.get(['DD', 'RR']).size == tree.size * 2 // 3
-    assert tree.get(['DD', 'RR']).get('DD') == tree.get('DD')
+    assert tree.get(keys=['DD', 'RR']).size == tree.size * 2 // 3
+    assert tree.get(keys=['DD', 'RR']).get('DD') == tree.get('DD')
     assert isinstance(tree.get('DD'), ObservableLeaf)
-    assert isinstance(tree.get(['DD']), ObservableTree)
+    assert isinstance(tree.get(keys=['DD']), ObservableTree)
     tree2 = tree.clear()
     assert tree2.labels(return_type='keys') == []
     assert tree2.size == 0
@@ -90,7 +90,8 @@ def test_tree():
     assert tree2.labels(level=None, return_type='keys') == ['observable', 'keys']
     assert tree2.labels(level=1, return_type='flatten') == [{'observable': 'correlation'}, {'observable': 'spectrum'}]
     assert tree2.labels(level=None, return_type='flatten') == [{'observable': 'correlation', 'keys': 'DD'}, {'observable': 'correlation', 'keys': 'DR'}, {'observable': 'correlation', 'keys': 'RR'}, {'observable': 'spectrum'}]
-
+    tree3 = tree2.get([{'observable': 'correlation', 'keys': 'DD'}, {'observable': 'spectrum'}])
+    assert tree3.labels(level=None, return_type='flatten') == [{'observable': 'correlation', 'keys': 'DD'}, {'observable': 'spectrum'}]
     fn = test_dir / 'tree.h5'
     write(fn, tree2)
     #tree3 = read(fn)
@@ -166,7 +167,7 @@ def test_io():
 
 def test_at():
 
-    def get_poles(seed=None):
+    def get_poles(seed=42):
         ells = [0, 2, 4]
         rng = np.random.RandomState(seed=seed)
         poles = []
@@ -188,6 +189,11 @@ def test_at():
     assert np.allclose(poles2.get(ells=2).value(), pole2.value())
     poles2 = poles.at(ells=2).replace(pole2)
     assert np.allclose(poles2.get(ells=2).value(), pole2.value())
+
+    value = poles.get(ells=[2, 4]).value()
+    assert value.size == poles.get(2).size + poles.get(4).size
+    poles3 = poles.at([{'ells': 2}, {'ells': 4}]).clone(value=value + 10.)
+    assert np.allclose(poles3.get(ells=[2, 4]).value(), value + 10.)
 
     pole = poles.get(ells=0)
     pnew, transform = pole.at.hook(lambda new, transform: (new, transform))().match(pole)
