@@ -382,3 +382,32 @@ def get_hartlap2007_factor(nobs: int, nbins: int):
         Rescaling factor to apply to the *inverse* covariance matrix.
     """
     return (nobs - nbins - 2.) / (nobs - 1.)
+
+
+def matrix_spline_interp(xt, xo, deriv: int=0, interp_order: int=3):
+    r"""
+    Matrix for spline interpolation from samples on `xt` to evaluations at `xo`.
+
+    Returns matrix A such that, for a 1D array y sampled on `xt`,
+        y_interp = A @ y
+    approximates y evaluated at `xo`.
+    """
+    from scipy.interpolate import make_interp_spline
+
+    xt = np.asarray(xt)
+    xo = np.asarray(xo)
+    if xt.ndim != 1 or np.any(xt[1:] <= xt[:-1]):
+        raise ValueError("xt must be 1D and strictly increasing")
+    if xo.ndim != 1:
+        raise ValueError("xo must be 1D")
+
+    I = np.eye(len(xt), dtype=float)
+    spl = make_interp_spline(xt, I, k=interp_order, axis=0)
+    if deriv == -1:
+        spl = spl.antiderivative()
+    elif deriv == 1:
+        spl = spl.derivative()
+    elif deriv != 0:
+        raise NotImplementedError(f"deriv={deriv} not implemented")
+
+    return np.asarray(spl(xo))

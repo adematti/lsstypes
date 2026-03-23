@@ -453,7 +453,7 @@ def test_types(show=False):
             spectrum.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
         return Mesh2SpectrumPoles(spectrum, ells=ells)
 
-    def get_spectrum2(seed=42, basis='sugiyama', full=False):
+    def get_spectrum3(seed=42, basis='sugiyama', full=False):
         ells = [0, 2]
         rng = np.random.RandomState(seed=seed)
 
@@ -493,8 +493,7 @@ def test_types(show=False):
             spectrum.append(Mesh3SpectrumPole(k=k, k_edges=k_edges, nmodes=nmodes, num_raw=rng.uniform(size=k.shape[0])))
         return Mesh3SpectrumPoles(spectrum, ells=ells)
 
-
-    def get_correlation2(seed=42, basis='sugiyama', full=False):
+    def get_correlation3(seed=42, basis='sugiyama', full=False):
         ells = [0, 2]
         rng = np.random.RandomState(seed=seed)
 
@@ -594,7 +593,7 @@ def test_types(show=False):
 
     for basis in ['sugiyama', 'sugiyama-diagonal', 'scoccimarro', 'scoccimarro-equilateral']:
         if basis in ['sugiyama', 'scoccimarro']:
-            spectrum = get_spectrum2(basis=basis, full=True)
+            spectrum = get_spectrum3(basis=basis, full=True)
             spectrum2 = spectrum.unravel()
             for pole in spectrum2:
                 assert len(pole.shape) > 1
@@ -605,7 +604,7 @@ def test_types(show=False):
                 assert len(pole.shape) == 1
             assert spectrum2 == spectrum
 
-        spectrum = get_spectrum2(basis=basis)
+        spectrum = get_spectrum3(basis=basis)
         spectrum.plot(show=show)
         spectrum2.plot(show=show)
         spectrum2 = spectrum.select(k=slice(0, None, 2))
@@ -666,7 +665,7 @@ def test_types(show=False):
 
     for basis in ['sugiyama', 'sugiyama-diagonal']:
         if basis in ['sugiyama', 'scoccimarro']:
-            correlation = get_correlation2(basis=basis, full=True)
+            correlation = get_correlation3(basis=basis, full=True)
             correlation2 = correlation.unravel()
             for pole in correlation2:
                 assert len(pole.shape) > 1
@@ -677,7 +676,7 @@ def test_types(show=False):
                 assert len(pole.shape) == 1
             assert correlation2 == correlation
 
-        correlation = get_correlation2(basis=basis)
+        correlation = get_correlation3(basis=basis)
         correlation.plot(show=show)
         correlation2.plot(show=show)
         correlation2 = correlation.select(s=slice(0, None, 2))
@@ -879,15 +878,11 @@ def test_readme():
         tree = ObservableTree([correlation, spectrum], observables=['correlation', 'spectrum'])
         print(tree.get(observables='spectrum', ells=2))
         tree.write('data.hdf5')
-
         tree = read('data.hdf5')
-
         # Apply coordinate selection
         subset = tree.select(s=(0, 100))
-
         # Rebin data, optionally using sparse matrices
         rebinned = subset.select(k=slice(0, None, 2))
-
         # Save your processed data
         rebinned.write('rebinned.hdf5')
 
@@ -899,6 +894,118 @@ def test_utils():
     assert np.allclose(factor, 0.948948948948949), factor
     factor = utils.get_percival2014_factor(nobs, nbins, nparams)
     assert np.allclose(factor, 1.0302691965504787), factor
+
+    def get_theory(k, ell):
+        from cosmoprimo.fiducial import DESI
+        cosmo = DESI(engine='eisenstein_hu')
+        pk1d = cosmo.get_fourier().pk_interpolator().to_1d(z=1.)
+        return 1. / (1 + sum(ell)) * pk1d(k[..., 0]) * pk1d(k[..., 1])
+
+    def get_spectrum3(seed=42):
+        rng = np.random.RandomState(seed=seed)
+        ndim = 2
+        ells = [(0, 0, 0), (2, 0, 2)]
+        spectrum = []
+        for ell in ells:
+            uedges = np.linspace(0., 0.2, 41)
+            uedges = [np.column_stack([uedges[:-1], uedges[1:]])] * ndim
+            k = [np.mean(uedge, axis=-1) for uedge in uedges]
+            nmodes1d = [np.ones(uedge.shape[0], dtype='i') for uedge in uedges]
+
+            def _product(array):
+                if not isinstance(array, (tuple, list)):
+                    array = [array] * ndim
+                grid = np.meshgrid(*array, sparse=False, indexing='ij')
+                return np.column_stack([tmp.ravel() for tmp in grid])
+
+            # of shape (nbins, ndim, 2)
+            k_edges = np.concatenate([_product([edge[..., 0] for edge in uedges])[..., None], _product([edge[..., 1] for edge in uedges])[..., None]], axis=-1)
+            k = _product(k)
+            nmodes = np.prod(_product(nmodes1d), axis=-1)
+            k = np.mean(k_edges, axis=-1)
+            num_raw = get_theory(k, ell)
+            spectrum.append(Mesh3SpectrumPole(k=k, k_edges=k_edges, nmodes=nmodes, num_raw=num_raw))
+        return Mesh3SpectrumPoles(spectrum, ells=ells)
+
+    import numbers
+    import scipy as sp
+
+    def make_spectrum_rebinning_matrix(current_theory: types.ObservableTree,
+                                       new_coords: int=None,
+                                       interp_order: int=3,
+                                       diag: str=None):
+        assert diag in [None, 'separate']
+        flattened_theory = current_theory.flatten(level=None)
+        coord_name = list(flattened_theory[0].coords())
+        assert len(coord_name) == 1
+        coord_name = coord_name[0]
+        current_coords = np.concatenate([pole.coords(coord_name) for pole in flattened_theory], axis=0)
+        current_coords = [np.unique(current_coord) for current_coord in current_coords.T]
+        if new_coords is None:
+            new_coords = current_coords
+        elif isinstance(new_coords, numbers.Number):
+            n = new_coords
+            new_coords = [np.linspace(coords.min(), coords.max(), n) for coords in current_coords]
+
+        def flatten_coords(*coords):
+            coords_flat = np.meshgrid(*coords, indexing='ij')
+            return np.column_stack([coord.ravel() for coord in coords_flat])
+
+        new_coords_flat = flatten_coords(*new_coords)
+
+        value = []
+        for label, pole in theory.items(level=None):
+            _current_coords = next(iter(pole.coords().values()))
+            current_coords = [np.unique(current_coord) for current_coord in _current_coords.T]
+            assert np.allclose(flatten_coords(*current_coords), _current_coords)
+            matrices1d = [utils.matrix_spline_interp(new_coord, current_coord, interp_order=interp_order) for new_coord, current_coord in zip(new_coords, current_coords)]
+            matrixnd = matrices1d[0]
+            for matrix1d in matrices1d[1:]:
+                matrixnd = np.kron(matrixnd, matrix1d)
+            if diag == 'separate':
+                shape = tuple(len(coord) for coord in current_coords)
+                assert all(ss == shape[0] for ss in shape[1:])
+                multi_index = tuple(np.arange(s) for s in shape)
+                diag_index = np.ravel_multi_index(multi_index, dims=shape)
+                # zero-out diagonal contribution
+                matrixnd[diag_index, :] = 0.
+                # then add the diagonal contribution
+                matrixdiag = np.zeros(matrixnd.shape[:1] + (len(diag_index),))
+                matrixdiag[diag_index, np.arange(len(diag_index))] = 1.
+                matrixnd = np.concatenate([matrixnd, matrixdiag], axis=-1)
+            value.append(matrixnd)
+
+        def f(pole):
+            coord_values = new_coords_flat
+            if diag == 'separate':
+                coord_values = np.concatenate([new_coords_flat, np.column_stack(current_coords)], axis=0)
+            return types.ObservableLeaf(value=np.zeros(len(coord_values)), **{coord_name: coord_values}, coords=[coord_name])
+
+        new_theory = current_theory.map(lambda pole: f(pole), level=None)
+        value = sp.linalg.block_diag(*value)
+        return types.WindowMatrix(value=value, theory=new_theory, observable=current_theory)
+
+    theory = get_spectrum3()
+    matrix = make_spectrum_rebinning_matrix(theory, new_coords=20, interp_order=3, diag='separate')
+    theory2 = matrix.theory.map(lambda pole, label: pole.clone(value=get_theory(pole.coords('k'), label['ells'])), input_label=True)
+    interpolated = matrix.dot(theory2.value())
+    interpolated = theory.clone(value=interpolated)
+
+    import matplotlib.pyplot as plt
+    ax = plt.gca()
+    for ill, (label, pole) in enumerate(interpolated.items()):
+        color = f'C{ill:d}'
+        pole2 = pole.unravel()
+        ell = label['ells']
+        k1 = pole2.coords('k1')
+        noffsets = 5
+        for offset in range(noffsets):
+            k2 = k1[offset:]
+            alpha = 1. - offset / noffsets
+            ax.plot(k2, k2**2 * pole2.value().diagonal(offset=offset), color=color, linestyle='-', alpha=alpha)
+            ax.plot(k2, k2**2 * get_theory(np.column_stack([k1[:len(k1) - offset], k2]), ell), color=color, linestyle='--', alpha=alpha)
+    plt.show()
+
 
 
 if __name__ == '__main__':
