@@ -32,7 +32,7 @@ def test_tree():
     leaf = leaves[0]
     assert np.allclose(leaf.value_as_leaf().value(), leaf.values('counts'))
     fn = test_dir / 'leaf.h5'
-    write(fn, leaf)
+    write(fn, leaf, locking=False)
     leaf2 = read(fn)
     assert leaf2 == leaf
 
@@ -161,7 +161,7 @@ def test_io():
         return Mesh2SpectrumPoles(poles, ells=ells, attrs={'zeff': np.float64(0.8)})
 
     spectrum = get_spectrum()
-    spectrum.write(fn)
+    spectrum.write(fn, locking=False)
     assert read(fn) == spectrum
 
 
@@ -293,7 +293,7 @@ def test_matrix(show=False):
 
     def test(matrix):
         fn = test_dir / 'matrix.h5'
-        matrix.write(fn)
+        matrix.write(fn, locking=False)
         matrix = read(fn)
 
         matrix2 = matrix.at.observable.at(2).select(k=slice(0, None, 2))
@@ -358,7 +358,7 @@ def test_likelihood():
     likelihood = GaussianLikelihood(observable=observable, window=window, covariance=covariance)
 
     fn = test_dir / 'likelihood.h5'
-    likelihood.write(fn)
+    likelihood.write(fn, locking=False)
     likelihood = read(fn)
 
     likelihood = likelihood.at.observable.get('spectrum')
@@ -991,20 +991,21 @@ def test_utils():
     interpolated = matrix.dot(theory2.value())
     interpolated = theory.clone(value=interpolated)
 
-    import matplotlib.pyplot as plt
-    ax = plt.gca()
-    for ill, (label, pole) in enumerate(interpolated.items()):
-        color = f'C{ill:d}'
-        pole2 = pole.unravel()
-        ell = label['ells']
-        k1 = pole2.coords('k1')
-        noffsets = 5
-        for offset in range(noffsets):
-            k2 = k1[offset:]
-            alpha = 1. - offset / noffsets
-            ax.plot(k2, k2**2 * pole2.value().diagonal(offset=offset), color=color, linestyle='-', alpha=alpha)
-            ax.plot(k2, k2**2 * get_theory(np.column_stack([k1[:len(k1) - offset], k2]), ell), color=color, linestyle='--', alpha=alpha)
-    plt.show()
+    if False:
+        import matplotlib.pyplot as plt
+        ax = plt.gca()
+        for ill, (label, pole) in enumerate(interpolated.items()):
+            color = f'C{ill:d}'
+            pole2 = pole.unravel()
+            ell = label['ells']
+            k1 = pole2.coords('k1')
+            noffsets = 5
+            for offset in range(noffsets):
+                k2 = k1[offset:]
+                alpha = 1. - offset / noffsets
+                ax.plot(k2, k2**2 * pole2.value().diagonal(offset=offset), color=color, linestyle='-', alpha=alpha)
+                ax.plot(k2, k2**2 * get_theory(np.column_stack([k1[:len(k1) - offset], k2]), ell), color=color, linestyle='--', alpha=alpha)
+        plt.show()
 
 
 

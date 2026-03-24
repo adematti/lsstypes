@@ -153,7 +153,7 @@ def _txt_recursively_read_dict(path='/'):
     return dic
 
 
-def _write(filename, state, overwrite=True):
+def _write(filename, state, overwrite=True, **kwargs):
     """
     Write a state dictionary to disk in HDF5 or text format.
 
@@ -165,12 +165,14 @@ def _write(filename, state, overwrite=True):
         State dictionary to write.
     overwrite : bool, optional
         If True, overwrite existing file.
+    kwargs : dict
+        Optional arguments for :class:`h5py.File`.
     """
     filename = str(filename)
     utils.mkdir(os.path.dirname(filename))
     if any(filename.endswith(ext) for ext in ['.h5', '.hdf5']):
         import h5py
-        with h5py.File(filename, 'w' if overwrite else 'a') as f:
+        with h5py.File(filename, 'w' if overwrite else 'a', **kwargs) as f:
             _h5py_recursively_write_dict(f, '/', state)
     elif any(filename.endswith(ext) for ext in ['txt']):
         if overwrite:
@@ -236,7 +238,7 @@ def from_state(state):
     return new
 
 
-def write(filename, observable):
+def write(filename, observable, **kwargs):
     """
     Write observable to disk.
 
@@ -244,6 +246,8 @@ def write(filename, observable):
     ----------
     filename : str
         Output file name.
+    kwargs : dict
+        Optional arguments for :class:`h5py.File`.
     """
     from lsstypes import __version__
 
@@ -258,7 +262,7 @@ def write(filename, observable):
             state = observable.__getstate__(to_file=True)
         return state
 
-    _write(filename, get_state(observable))
+    _write(filename, get_state(observable), **kwargs)
 
 
 def read(filename):
@@ -998,7 +1002,7 @@ class ObservableLeaf(object):
     def __eq__(self, other):
         return deep_eq(self.__getstate__(), other.__getstate__())
 
-    def write(self, filename):
+    def write(self, filename, **kwargs):
         """
         Write observable to disk.
 
@@ -1006,8 +1010,10 @@ class ObservableLeaf(object):
         ----------
         filename : str
             Output file name.
+        kwargs : dict
+            Optional arguments for :class:`h5py.File`.
         """
-        return write(filename, self)
+        return write(filename, self, **kwargs)
 
     def __add__(self, other):
         return self.sum([self, other])
@@ -2250,7 +2256,7 @@ class ObservableTree(object):
     def __eq__(self, other):
         return deep_eq(self.__getstate__(), other.__getstate__())
 
-    def write(self, filename):
+    def write(self, filename, **kwargs):
         """
         Write observable to disk.
 
@@ -2258,8 +2264,10 @@ class ObservableTree(object):
         ----------
         filename : str
             Output file name.
+        kwargs : dict
+            Optional arguments for :class:`h5py.File`.
         """
-        return write(filename, self)
+        return write(filename, self, **kwargs)
 
 
 class _ObservableTreeUpdateHelper(object):
@@ -2876,7 +2884,7 @@ class WindowMatrix(object):
             return self._observable.clone(value=toret)
         return toret
 
-    def write(self, filename):
+    def write(self, filename, **kwargs):
         """
         Write window matrix to disk.
 
@@ -2884,8 +2892,10 @@ class WindowMatrix(object):
         ----------
         filename : str
             Output file name.
+        kwargs : dict
+            Optional arguments for :class:`h5py.File`.
         """
-        return write(filename, self)
+        return write(filename, self, **kwargs)
 
     @utils.plotter
     def plot(self, level=None, **kwargs):
@@ -3202,7 +3212,7 @@ class CovarianceMatrix(object):
     def __eq__(self, other):
         return deep_eq(self.__getstate__(), other.__getstate__())
 
-    def write(self, filename):
+    def write(self, filename, **kwargs):
         """
         Write covariance matrix to disk.
 
@@ -3210,8 +3220,10 @@ class CovarianceMatrix(object):
         ----------
         filename : str
             Output file name.
+        kwargs : dict
+            Optional arguments for :class:`h5py.File`.
         """
-        return write(filename, self)
+        return write(filename, self, **kwargs)
 
 
     @classmethod
@@ -3661,7 +3673,7 @@ class GaussianLikelihood(object):
     def __eq__(self, other):
         return deep_eq(self.__getstate__(), other.__getstate__())
 
-    def write(self, filename):
+    def write(self, filename, **kwargs):
         """
         Write likelihood to disk.
 
@@ -3669,8 +3681,10 @@ class GaussianLikelihood(object):
         ----------
         filename : str
             Output file name.
+        kwargs : dict
+            Optional arguments for :class:`h5py.File`.
         """
-        return write(filename, self)
+        return write(filename, self, **kwargs)
 
 
 ObservableLike = ObservableLeaf | ObservableTree

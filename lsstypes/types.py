@@ -1745,7 +1745,7 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
     if isscalar:
         values = values[0]
     else:
-        values = Count2CorrelationPoles(values)
+        values = Count2CorrelationPoles(values, attrs=estimator.attrs)
 
     toret = [values]
     if return_covariance:
