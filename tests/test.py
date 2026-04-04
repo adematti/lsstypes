@@ -1008,6 +1008,124 @@ def test_utils():
         plt.show()
 
 
+def test_wrap():
+
+    def get_count(mode='smu', seed=42):
+        rng = np.random.RandomState(seed=seed)
+        if mode == 'smu':
+            coords = ['s', 'mu']
+            edges = [np.linspace(0., 200., 201), np.linspace(-1., 1., 101)]
+        if mode == 'rppi':
+            coords = ['rp', 'pi']
+            edges = [np.linspace(0., 200., 51), np.linspace(-20., 20., 101)]
+
+        edges = [np.column_stack([edge[:-1], edge[1:]]) for edge in edges]
+        coords_values = [np.mean(edge, axis=-1) for edge in edges]
+
+        counts = 1. + rng.uniform(size=tuple(v.size for v in coords_values))
+        return Count2(counts=counts, norm=np.ones_like(counts), **{coord: value for coord, value in zip(coords, coords_values)},
+                      **{f'{coord}_edges': value for coord, value in zip(coords, edges)}, coords=coords, attrs=dict(los='x'))
+
+    def get_correlation(mode='smu', seed=42):
+        counts = {label: get_count(mode=mode, seed=seed + i) for i, label in enumerate(['DD', 'DR', 'RD', 'RR'])}
+        return Count2Correlation(**counts)
+
+    def get_correlation_jackknife(mode='smu', seed=42):
+        def get_count_jk(seed=42):
+            realizations = list(range(24))
+            ii_counts = {ireal: get_count(mode=mode, seed=seed + ireal) for ireal in realizations}
+            ij_counts = {ireal: get_count(mode=mode, seed=seed + ireal + 1) for ireal in realizations}
+            ji_counts = {ireal: get_count(mode=mode, seed=seed + ireal + 2) for ireal in realizations}
+            return Count2Jackknife(ii_counts, ij_counts, ji_counts)
+
+        counts = {label: get_count_jk(seed=seed + i) for i, label in enumerate(['DD', 'DR', 'RD', 'RR'])}
+        return Count2JackknifeCorrelation(**counts)
+
+    def wrap(count: types.Count2) -> types.Count2:
+        """
+        Wrap a Count2 with symmetric edges along the 2nd dimension as a Count2 with half the number of bins along that dimension, and counts summed accordingly.
+        This is useful for example to wrap a correlation function in (s, mu) coordinates as a correlation function in (s, |mu|) coordinates.
+        """
+        if count.shape[1] % 2:
+            raise ValueError(f'input counts cannot be wrapped as 2nd dimension is odd = {count.shape[1]:d}')
+        mid = count.shape[1] // 2
+        sl_neg, sl_pos = slice(mid - 1, None, -1), slice(mid, None, 1)
+        coord_name = count._coords_names[1]
+        mu_edges = count.edges(coord_name)
+        if not np.allclose(mu_edges[sl_neg], - mu_edges[sl_pos, ::-1]):
+            raise ValueError(f'input counts cannot be wrapped as 2nd dimension edges are not symmetric; {mu_edges[sl_neg]} != {-mu_edges[sl_pos, ::-1]}')
+        mu_edges = mu_edges[sl_pos]
+        counts = count.values('counts')
+        # Sum counts in the negative and positive halves along the 2nd dimension
+        counts = counts[..., sl_neg] + counts[..., sl_pos]
+        norm = count.values('norm')[..., sl_pos]
+        # Prepare wrapped edges
+        edges = dict(count.edges())
+        edges[coord_name] = mu_edges
+        edges = {'{}_edges'.format(coord): edge for coord, edge in edges.items()}
+        # Prepare wrapped coordinates
+        mu_coord = count.coords(coord_name)[sl_pos]
+        coords = dict(count.coords())
+        coords[coord_name] = mu_coord
+        return Count2(counts=counts, norm=norm, **coords, **edges, coords=list(coords), attrs=dict(count.attrs))
+
+    correlation = get_correlation()
+    correlation = correlation.map(lambda count: wrap(count))
+    assert correlation.get('DD').shape[1] == 50
+
+    correlation = get_correlation_jackknife()
+    correlation = correlation.map(lambda count: wrap(count), level=None, is_leaf=lambda branch: False)  #type(branch) is types.Count2)
+    assert correlation.get('DD').realization(0).shape[1] == 50
+
+
+def test_io_speed():
+    import time
+
+    test_dir = Path('_tests')
+
+    def get_spectrum(seed=42):
+        ells = [0, 2, 4]
+        rng = np.random.RandomState(seed=seed)
+        spectrum = []
+        for ell in ells:
+            k_edges = np.arange(0., 0.4, 0.001)
+            k_edges = np.column_stack([k_edges[:-1], k_edges[1:]])
+            k = np.mean(k_edges, axis=-1)
+            spectrum.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
+        return Mesh2SpectrumPoles(spectrum, ells=ells)
+
+    spectrum = get_spectrum()
+    fn = test_dir / 'spectrum.h5'
+    spectrum.write(fn)
+
+    import h5py
+    from lsstypes.base import _h5py_recursively_read_dict, from_state
+
+    n = 100
+    t0 = time.time()
+    for i in range(n):
+        spectrum2 = read(fn)
+    print(f'Readout time h5py: {(time.time() - t0) / n:.5f} s')
+
+    state = spectrum.__getstate__(to_file=True)
+    fn_npy = fn.with_suffix('.npy')
+    np.save(fn_npy, state)
+
+    t0 = time.time()
+    for i in range(n):
+        state = np.load(fn_npy, allow_pickle=True)[()]
+        spectrum2 = from_state(state)
+    print(f'Readout time npy: {(time.time() - t0) / n:.5f} s')
+
+    spectrum_batch = {i: get_spectrum(seed=seed) for i, seed in enumerate(range(100))}
+    fn = test_dir / 'spectrum.h5'
+    types.write(fn, spectrum_batch)
+
+    # Read-out time scales linearly with the number of hdf5 groups
+    t0 = time.time()
+    spectrum2 = types.read(fn)
+    print(f'Readout time npy: {(time.time() - t0):.5f} s')
+
 
 if __name__ == '__main__':
 
@@ -1023,3 +1141,4 @@ if __name__ == '__main__':
     test_readme()
     test_io()
     test_external()
+    test_wrap()

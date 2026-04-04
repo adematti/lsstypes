@@ -845,8 +845,6 @@ class Mesh3CorrelationPole(ObservableLeaf):
         return fig
 
 
-
-
 @register_type
 class Mesh3CorrelationPoles(ObservableTree):
     r"""
@@ -938,13 +936,10 @@ class Count2(ObservableLeaf):
     ----------
     counts : array-like
         Raw pair counts for each bin.
-
     norm : array-like, optional
         Normalization factor (default: ones).
-
     attrs : dict, optional
         Additional attributes.
-
     kwargs : dict
         Additional keyword arguments for initialization.
         Notably, "coords".

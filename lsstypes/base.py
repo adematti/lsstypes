@@ -1497,7 +1497,7 @@ def tree_map(f, tree, level=None, input_label=False, is_leaf=None):
 
     def _is_leaf(branch, is_input):
         if input_not_leaf and is_input: return False
-        return is_leaf(branch)
+        return is_leaf(branch) or isinstance(branch, ObservableLeaf)
 
     def _stop(branch, level, is_input=False):
         if isinstance(branch, list):
