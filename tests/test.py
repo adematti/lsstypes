@@ -648,6 +648,8 @@ def test_types(show=False):
     assert value.get((1. / 2., 2. / 3.)) == value.get('w2')
 
     correlation = get_correlation_jackknife(mode='smu')
+    assert len(correlation.realizations) == 24
+    assert callable(correlation.realization)
     value, covariance, window = correlation.project(ells=[0, 2, 4], kw_covariance=dict(), kw_window=dict(resolution=2))
     value.plot(show=show)
     covariance.plot(show=show)

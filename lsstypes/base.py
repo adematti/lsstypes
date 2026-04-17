@@ -2906,17 +2906,13 @@ class WindowMatrix(object):
         ----------
         barlabel : str, default=None
             Optionally, label for the color bar.
-
         figsize : int, tuple, default=None
             Optionally, figure size.
-
         norm : matplotlib.colors.Normalize, default=None
             Scales the matrix to the canonical colormap range [0, 1] for mapping to colors.
             By default, the matrix range is mapped to the color bar range using linear scaling.
-
         labelsize : int, default=None
             Optionally, size for labels.
-
         fig : matplotlib.figure.Figure, default=None
             Optionally, a figure with at least ``len(self._observables) * len(self._observables)`` axes.
 

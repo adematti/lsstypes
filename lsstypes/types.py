@@ -1044,7 +1044,7 @@ class Count2Jackknife(LeafLikeObservableTree):
         counts += [ji_counts[real] for real in realizations]
         cross = ['ii'] * len(ii_counts) + ['ij'] * len(ij_counts) + ['ji'] * len(ji_counts)
         realizations = realizations * 3
-        super().__init__(counts, attrs=attrs, cross=cross, realizations=realizations)
+        super().__init__(counts, attrs=attrs, cross=cross, realization=realizations)
 
     def value(self, return_type='nparray'):
         """
@@ -1105,9 +1105,13 @@ class Count2Jackknife(LeafLikeObservableTree):
                 self._attrs[name] = sum(count._attrs[name] for count in self.get(cross='ii'))
 
     @property
+    def realizations(self):
+        return [ireal for ireal, cross in zip(self._labels['realization'], self._labels['cross']) if cross == 'ii']
+
+    @property
     def nrealizations(self):
         """Number of realizations."""
-        return len(self._labels) // 3
+        return len(self.realizations)
 
     def realization(self, ii, correction='mohammad21'):
         """
@@ -1138,18 +1142,19 @@ class Count2Jackknife(LeafLikeObservableTree):
                 raise ValueError('unknown jackknife correction {}'.format(correction))
         elif correction is not None:
             alpha = float(correction)
-        counts = self.get(realizations=ii, cross='ii').copy()
+        counts = self.get(realization=ii, cross='ii').copy()
+        counts.attrs.clear()
         for name in ['counts', 'norm']:
-            counts._data[name] = self.values(name) - self.get(realizations=ii, cross='ii').values(name)\
-                                 - alpha * (self.get(realizations=ii, cross='ij').values(name) + self.get(realizations=ii, cross='ji').values(name))
+            counts._data[name] = self.values(name) - self.get(realization=ii, cross='ii').values(name)\
+                                 - alpha * (self.get(realization=ii, cross='ij').values(name) + self.get(realization=ii, cross='ji').values(name))
         dcounts = counts._data.pop('counts')
         counts._data['normalized_counts'] = dcounts / counts._data['norm']
         for iaxis, axis in enumerate(self._coords_names):
             reduce_axis = tuple(iax for iax in range(len(self._coords_names)) if iax != iaxis)
             counts._data[axis] = _nan_to_zero(self.coords(axis=axis)) * self.values('counts').sum(axis=reduce_axis) \
-                                - _nan_to_zero(self.get(realizations=ii, cross='ii').coords(axis)) * self.get(realizations=ii, cross='ii').values('counts').sum(axis=reduce_axis)\
-                                - alpha * (_nan_to_zero(self.get(realizations=ii, cross='ij').coords(axis)) * self.get(realizations=ii, cross='ij').values('counts').sum(axis=reduce_axis)\
-                                         + _nan_to_zero(self.get(realizations=ii, cross='ji').coords(axis)) * self.get(realizations=ii, cross='ji').values('counts').sum(axis=reduce_axis))
+                                - _nan_to_zero(self.get(realization=ii, cross='ii').coords(axis)) * self.get(realization=ii, cross='ii').values('counts').sum(axis=reduce_axis)\
+                                - alpha * (_nan_to_zero(self.get(realization=ii, cross='ij').coords(axis)) * self.get(realization=ii, cross='ij').values('counts').sum(axis=reduce_axis)\
+                                         + _nan_to_zero(self.get(realization=ii, cross='ji').coords(axis)) * self.get(realization=ii, cross='ji').values('counts').sum(axis=reduce_axis))
             with np.errstate(divide='ignore', invalid='ignore'):
                 counts._data[axis] /= dcounts.sum(axis=reduce_axis)
                 # The above may lead to rounding errors
@@ -1160,7 +1165,7 @@ class Count2Jackknife(LeafLikeObservableTree):
                 counts._data[axis][~mask] = np.nan
         for name in ['size1', 'size2']:
             if name in self._attrs:
-                counts._attrs[name] = self._attrs[name] - self.get(realizations=ii, cross='ii')._attrs[name]
+                counts._attrs[name] = self._attrs[name] - self.get(realization=ii, cross='ii')._attrs[name]
         return counts
 
     def cov(self, return_type='nparray', **kwargs):
@@ -1219,12 +1224,15 @@ class Count2Correlation(LeafLikeObservableTree):
         Estimator type ('landyszalay' or 'natural'). Default is 'landyszalay'.
         One can also provide directly the formula, e.g. 'DD / RR'.
         In this case, ``kwargs`` should provide the pair counts.
-
     attrs : dict, optional
         Additional attributes.
-
-    kwargs : dict
+    **kwargs : dict
         Pair count observables, e.g. DD, RR, DR, RD, DS, SD, SS.
+
+    Attributes
+    ----------
+    realizations : list
+        List of (unique) realizations.
     """
 
     _name = 'count2_correlation'
@@ -1297,19 +1305,15 @@ class Count2Correlation(LeafLikeObservableTree):
         ----------
         mode : str, optional
             Projection mode ('poles', 'wedges', 'wp'). If None, inferred from kwargs.
-
         ells : list of int, optional
             Orders of Legendre polynomials to project onto (default is ``[0, 2, 4]``).
-
         ignore_nan : bool, optional
             If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
-
         kw_window : dict, optional
             Optional arguments for window matrix calculation:
             - 'RR': :class:`Count2` instance with finer `s`-binning, to override ``estimator.get('RR')``
             - 'resolution' (default=1): number of evaluation points per RR-bin.
             If provided, also returns the window matrix for convolving theory.
-
         kw_covariance : dict, optional
             Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
             If provided, also returns the covariance matrix of the multipoles.
@@ -1318,10 +1322,8 @@ class Count2Correlation(LeafLikeObservableTree):
         -------
         poles : Count2CorrelationPole, Count2CorrelationPoles, Count2CorrelationWedge, Count2CorrelationWedges, Count2CorrelationWp
             Correlation function multipoles or wedges or projected correlation function.
-
         window : WindowMatrix, optional
             Window matrix for convolving theory (returned if ``kw_window`` is provided).
-
         covariance : CovarianceMatrix, optional
             Covariance matrix of the multipoles (returned if ``kw_covariance`` is provided).
             """
@@ -1372,10 +1374,8 @@ class Count2JackknifeCorrelation(Count2Correlation):
     ----------
     estimator : str, optional
         Estimator type ('landyszalay' or 'natural'). Default is 'landyszalay'.
-
     attrs : dict, optional
         Additional attributes.
-
     kwargs : dict
         Pair count observables, e.g. DD, RR, DR, RD, DS, SD, SS.
     """
@@ -1399,7 +1399,6 @@ class Count2JackknifeCorrelation(Count2Correlation):
         ----------
         ii : int
             Label of jackknife realization.
-
         kwargs : dict
             Optional arguments for :meth:`Count2JackknifeCorrelation.realization`.
 
@@ -2287,3 +2286,26 @@ class Count2CorrelationWp(ObservableLeaf):
             ax = fig.axes[0]
         ax.plot(self.rp, self.rp * self.value())
         return fig
+
+
+
+@register_type
+class Count3(Count2):
+    """
+    Container for three-point pair counts.
+
+    Stores binned pair counts and normalization for correlation function estimation.
+
+    Parameters
+    ----------
+    counts : array-like
+        Raw pair counts for each bin.
+    norm : array-like, optional
+        Normalization factor (default: ones).
+    attrs : dict, optional
+        Additional attributes.
+    kwargs : dict
+        Additional keyword arguments for initialization.
+        Notably, "coords".
+    """
+    _name = 'count3'
