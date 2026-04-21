@@ -6,7 +6,7 @@ import numpy as np
 
 import lsstypes as types
 from lsstypes import ObservableLeaf, ObservableTree, read, write
-from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole, Mesh3SpectrumPoles, Mesh3CorrelationPole, Mesh3CorrelationPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
+from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole, Mesh3SpectrumPoles, Mesh2CorrelationPole, Mesh2CorrelationPoles, Mesh3CorrelationPole, Mesh3CorrelationPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
 from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood, ObservableLike
 
 
@@ -442,7 +442,7 @@ def test_types(show=False):
 
     test_dir = Path('_tests')
 
-    def get_spectrum(seed=42):
+    def get_mesh2_spectrum(seed=42):
         ells = [0, 2, 4]
         rng = np.random.RandomState(seed=seed)
         spectrum = []
@@ -453,7 +453,7 @@ def test_types(show=False):
             spectrum.append(Mesh2SpectrumPole(k=k, k_edges=k_edges, num_raw=rng.uniform(size=k.size)))
         return Mesh2SpectrumPoles(spectrum, ells=ells)
 
-    def get_spectrum3(seed=42, basis='sugiyama', full=False):
+    def get_mesh_spectrum3(seed=42, basis='sugiyama', full=False):
         ells = [0, 2]
         rng = np.random.RandomState(seed=seed)
 
@@ -493,13 +493,28 @@ def test_types(show=False):
             spectrum.append(Mesh3SpectrumPole(k=k, k_edges=k_edges, nmodes=nmodes, num_raw=rng.uniform(size=k.shape[0])))
         return Mesh3SpectrumPoles(spectrum, ells=ells)
 
-    def get_correlation3(seed=42, basis='sugiyama', full=False):
+    def get_mesh2_correlation(seed=42):
+        ells = [0, 2, 4]
+        rng = np.random.RandomState(seed=seed)
+        correlation = []
+        for ell in ells:
+            s_edges = np.linspace(0., 200, 41)
+            s_edges = np.column_stack([s_edges[:-1], s_edges[1:]])
+            s = np.mean(s_edges, axis=-1)
+            correlation.append(Mesh2CorrelationPole(s=s, s_edges=s_edges, num_raw=rng.uniform(size=s.size)))
+        return Mesh2CorrelationPoles(correlation, ells=ells)
+
+    def get_mesh3_correlation(seed=42, basis='sugiyama', full=False):
         ells = [0, 2]
         rng = np.random.RandomState(seed=seed)
 
         assert basis in ['sugiyama', 'sugiyama-diagonal']
-        if 'scoccimarro' in basis: ndim = 3
-        else: ndim = 2
+        if 'scoccimarro' in basis:
+            ndim = 3
+            ells = [0, 2]
+        else:
+            ndim = 2
+            ells = [(0, 0, 0), (2, 0, 2)]
 
         correlation = []
         for ell in ells:
@@ -564,14 +579,14 @@ def test_types(show=False):
         counts = {label: get_count_jk(seed=seed + i) for i, label in enumerate(['DD', 'DR', 'RD', 'RR'])}
         return Count2JackknifeCorrelation(**counts)
 
-    spectrum = get_spectrum()
+    spectrum = get_mesh2_spectrum()
     spectrum.plot(show=show)
     spectrum2 = spectrum.select(k=slice(0, None, 2))
 
-    spectrum = types.sum([get_spectrum(seed=seed) for seed in range(2)])
+    spectrum = types.sum([get_mesh2_spectrum(seed=seed) for seed in range(2)])
     assert np.allclose(spectrum.get(0).norm, 2)
-    spectrum = types.mean([get_spectrum(seed=seed) for seed in range(2)])
-    spectrum2 = types.join([get_spectrum().get(ells=[0, 2]), get_spectrum().get(ells=[4])])
+    spectrum = types.mean([get_mesh2_spectrum(seed=seed) for seed in range(2)])
+    spectrum2 = types.join([get_mesh2_spectrum().get(ells=[0, 2]), get_mesh2_spectrum().get(ells=[4])])
     assert spectrum2.labels(return_type='flatten') == [{'ells': 0}, {'ells': 2}, {'ells': 4}]
 
     fn = test_dir / 'spectrum.txt'
@@ -582,7 +597,7 @@ def test_types(show=False):
     all_spectrum, all_labels = [], []
     z = [0.2, 0.4, 0.6]
     for iz, zz in enumerate(z):
-        spectrum = get_spectrum()
+        spectrum = get_mesh2_spectrum()
         spectrum.attrs['zeff'] = zz
         all_spectrum.append(spectrum)
         all_labels.append(f'z{iz:d}')
@@ -593,7 +608,7 @@ def test_types(show=False):
 
     for basis in ['sugiyama', 'sugiyama-diagonal', 'scoccimarro', 'scoccimarro-equilateral']:
         if basis in ['sugiyama', 'scoccimarro']:
-            spectrum = get_spectrum3(basis=basis, full=True)
+            spectrum = get_mesh_spectrum3(basis=basis, full=True)
             spectrum2 = spectrum.unravel()
             for pole in spectrum2:
                 assert len(pole.shape) > 1
@@ -604,7 +619,7 @@ def test_types(show=False):
                 assert len(pole.shape) == 1
             assert spectrum2 == spectrum
 
-        spectrum = get_spectrum3(basis=basis)
+        spectrum = get_mesh_spectrum3(basis=basis)
         spectrum.plot(show=show)
         spectrum2.plot(show=show)
         spectrum2 = spectrum.select(k=slice(0, None, 2))
@@ -614,6 +629,45 @@ def test_types(show=False):
         spectrum.write(fn)
         spectrum2 = read(fn)
         assert spectrum2 == spectrum
+
+    correlation = get_mesh2_correlation()
+    correlation.plot(show=show)
+    correlation2 = correlation.select(s=slice(0, None, 2))
+    correlation = types.sum([get_mesh2_correlation(seed=seed) for seed in range(2)])
+    assert np.allclose(correlation.get(0).norm, 2)
+
+    correlation = types.mean([get_mesh2_correlation(seed=seed) for seed in range(2)])
+    correlation2 = types.join([get_mesh2_correlation().get(ells=[0, 2]), get_mesh2_correlation().get(ells=[4])])
+    assert correlation2.labels(return_type='flatten') == [{'ells': 0}, {'ells': 2}, {'ells': 4}]
+
+    fn = test_dir / 'correlation.txt'
+    correlation.write(fn)
+    correlation2 = read(fn)
+    assert correlation2 == correlation
+
+    for basis in ['sugiyama', 'sugiyama-diagonal']:
+        if basis in ['sugiyama', 'scoccimarro']:
+            correlation = get_mesh3_correlation(basis=basis, full=True)
+            correlation2 = correlation.unravel()
+            for pole in correlation2:
+                assert len(pole.shape) > 1
+            if basis != 'scoccimarro':
+                correlation2.plot(show=show)
+            correlation2 = correlation2.ravel()
+            for pole in correlation2:
+                assert len(pole.shape) == 1
+            assert correlation2 == correlation
+
+        correlation = get_mesh3_correlation(basis=basis)
+        correlation.plot(show=show)
+        correlation2.plot(show=show)
+        correlation2 = correlation.select(s=slice(0, None, 2))
+        correlation2 = correlation.select(s=(0., 0.15))
+        correlation2 = correlation.select(s=[(0., 0.1), (0., 0.15)])
+        fn = test_dir / 'correlation.h5'
+        correlation.write(fn)
+        correlation2 = read(fn)
+        assert correlation2 == correlation
 
     correlation = get_correlation(mode='smu', seed=42)
     RR = correlation.get('RR')
@@ -664,30 +718,6 @@ def test_types(show=False):
     value, covariance = correlation.project(kw_covariance=dict())
     value.plot(show=show)
     covariance.plot(show=show)
-
-    for basis in ['sugiyama', 'sugiyama-diagonal']:
-        if basis in ['sugiyama', 'scoccimarro']:
-            correlation = get_correlation3(basis=basis, full=True)
-            correlation2 = correlation.unravel()
-            for pole in correlation2:
-                assert len(pole.shape) > 1
-            if basis != 'scoccimarro':
-                correlation2.plot(show=show)
-            correlation2 = correlation2.ravel()
-            for pole in correlation2:
-                assert len(pole.shape) == 1
-            assert correlation2 == correlation
-
-        correlation = get_correlation3(basis=basis)
-        correlation.plot(show=show)
-        correlation2.plot(show=show)
-        correlation2 = correlation.select(s=slice(0, None, 2))
-        correlation2 = correlation.select(s=(0., 0.15))
-        correlation2 = correlation.select(s=[(0., 0.1), (0., 0.15)])
-        fn = test_dir / 'correlation.h5'
-        correlation.write(fn)
-        correlation2 = read(fn)
-        assert correlation2 == correlation
 
 
 def test_sparse():
