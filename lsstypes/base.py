@@ -517,6 +517,46 @@ def _check_data_shapes(self):
             assert vshape == cshape, f'expected shape of {name} is {cshape}, got {vshape}'
 
 
+def sparse_tensordot(matrix, tmp, axis):
+    """
+    Replace np.moveaxis(np.tensordot(matrix, tmp, axes=([1], [axis])), 0, axis)
+    for a SciPy CSR sparse matrix.
+
+    Parameters
+    ----------
+    matrix : scipy.sparse.csr_matrix, shape (m, n)
+    tmp : array_like, shape (..., n, ...)
+    axis : int
+        Axis of ``tmp`` to contract with matrix axis 1.
+
+    Returns
+    -------
+    out : ndarray
+        Same result as np.moveaxis(np.tensordot(matrix, tmp, axes=([1], [axis])), 0, axis).
+    """
+    tmp = np.asarray(tmp)
+    iaxis = np.core.numeric.normalize_axis_index(axis, tmp.ndim)
+
+    if tmp.shape[iaxis] != matrix.shape[1]:
+        raise ValueError(
+            f"shape mismatch: matrix.shape[1] = {matrix.shape[1]} "
+            f"but tmp.shape[{iaxis}] = {tmp.shape[iaxis]}"
+        )
+
+    # Bring contracted axis to front: (n, ...)
+    tmp_front = np.moveaxis(tmp, iaxis, 0)
+
+    # Flatten trailing dimensions: (n, k)
+    tmp_2d = tmp_front.reshape(tmp_front.shape[0], -1)
+
+    # Sparse matmul: (m, n) @ (n, k) -> (m, k)
+    out_2d = matrix @ tmp_2d
+
+    # Reshape to (m, tmp.shape without contracted axis)
+    out = out_2d.reshape((matrix.shape[0],) + tmp_front.shape[1:])
+    return out
+
+
 @register_type
 class ObservableLeaf(object):
     """A compressed observable with named values and coordinates, supporting slicing, selection, and plotting."""
@@ -720,11 +760,12 @@ class ObservableLeaf(object):
                 new._data[axis_edges] = new._data[axis_edges][index]
         return new
 
-    def _transform(self, limit, axis=0, name=None, full=None, return_edges=False, center='mid_if_edges'):
+    def _transform(self, limit, axis: int=0, name: str=None, full: bool=None, return_edges: bool=False, center: str='mid_if_edges'):
         # Return mask or matrix to transform the observable with input limit
         # limit: tuple (select range in coordinates), slice, ObservableLeaf, array-like (coordinates or edges)
         # axis: int or str, axis to rebin
         # name: str or (bool, bool), name of value to use for bin weighting
+
         if not isinstance(axis, str):
             axis = self._coords_names[axis]
         if limit is None:
@@ -850,10 +891,35 @@ class ObservableLeaf(object):
         # Tolerance: 1e-5x bin width
         width = np.abs(edges[..., 1] - edges[..., 0])
         tol = 1e-5 * width
-        # Broadcast iedges[:, None, :] against edges[None, :, :]
-        mask = (self_edges[None, ..., 0] >= edges[:, None, ..., 0] - tol[:, None]) & (self_edges[None, ..., 1] <= edges[:, None, ..., 1] + tol[:, None])  # (new_size, old_size) or (new_size, old_size, ndim)
-        if mask.ndim >= 3:
-            mask = mask.all(axis=-1)  # collapse extra dims if needed
+        try:
+            import scipy.sparse as sp
+        except ImportError:
+            sp = None
+
+        edges_ = edges[:, None, :] if edges.ndim == 2 else edges
+        self_edges_ = self_edges[:, None, :] if self_edges.ndim == 2 else self_edges
+        tol_ = tol[:, None] if tol.ndim == 1 else tol
+
+        if sp is None:
+            mask = ((self_edges_[None, ..., 0] >= edges_[:, None, ..., 0] - tol_[:, None]) &
+                (self_edges_[None, ..., 1] <= edges_[:, None, ..., 1] + tol_[:, None])).all(axis=-1)
+        else:
+            rows, cols = [], []
+            for i in range(edges_.shape[0]):
+                rowmask = np.ones(self_edges_.shape[0], dtype='?')
+                for idim in range(self_edges_.shape[1]):
+                    rowmask &= self_edges_[:, idim, 0] >= edges_[i, idim, 0] - tol_[i, idim]
+                    rowmask &= self_edges_[:, idim, 1] <= edges_[i, idim, 1] + tol_[i, idim]
+                jj = np.flatnonzero(rowmask)
+                rows.append(np.full(jj.size, i, dtype='i8'))
+                cols.append(jj)
+
+            rows = np.concatenate(rows)
+            cols = np.concatenate(cols)
+
+            from scipy import sparse
+            mask = sparse.csr_matrix((np.ones(rows.size, dtype='?'), (rows, cols)), shape=(edges_.shape[0], self_edges_.shape[0]))
+
         if mask.sum(axis=-1).max() == 1:  # 0 or 1 True: a simple selection!
             index, index_self = np.nonzero(mask)
             index_self = index_self[np.argsort(index)]
@@ -888,9 +954,12 @@ class ObservableLeaf(object):
             # all isn't implemented for scipy sparse, just check the sum of the boolean array
             norm = 1 / np.ravel(np.where((matrix != 0).sum(axis=-1) == 0, 1, matrix.sum(axis=-1)))[:, None]
             matrix = multiply(matrix, norm)
+        if hasattr(matrix, 'tocsr'):
+            matrix = matrix.tocsr()  # better for dot
 
         if return_edges:
             return matrix, edges
+
         return matrix
 
     def _update(self, **kwargs):
@@ -976,7 +1045,7 @@ class ObservableLeaf(object):
                 nwmatrix_reduced = transform
                 tmp = _nan_to_zero(new._data[axis])
                 _data = {}
-                _data[axis] = np.tensordot(nwmatrix_reduced, tmp, axes=([1], [0]))
+                _data[axis] = sparse_tensordot(nwmatrix_reduced, tmp, axis=0)
                 shape = tuple(len(_data[ax]) if ax == axis else len(new._data[ax]) for ax in new._coords_names)
                 if axis_edges in new._data:
                     _data[axis_edges] = edges
@@ -989,7 +1058,7 @@ class ObservableLeaf(object):
                         _cache[cache_key] = new._transform(limit, axis=axis, name=name)
                     matrix = _cache[cache_key]
                     if matrix.shape[1] == tmp.shape[iaxis]:  # compressed version
-                        _data[name] = np.moveaxis(np.tensordot(matrix, tmp, axes=([1], [iaxis])), 0, iaxis)
+                        _data[name] = sparse_tensordot(matrix, tmp, axis=iaxis)
                     else:
                         _data[name] = matrix.dot(tmp.ravel()).reshape(shape)
                 new._data.update(_data)

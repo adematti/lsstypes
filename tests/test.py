@@ -12,7 +12,7 @@ from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood, Observa
 
 def _make_mesh3_spectrum_poles(seed=42):
     rng = np.random.RandomState(seed=seed)
-    base_edges = np.linspace(0., 0.2, 13)
+    base_edges = np.linspace(0., 0.2, 51)
     base_edges = np.column_stack([base_edges[:-1], base_edges[1:]])
     grid = np.meshgrid(*([np.arange(base_edges.shape[0])] * 3), sparse=False, indexing='ij')
     index = np.column_stack([tmp.ravel() for tmp in grid])
@@ -753,9 +753,15 @@ def test_select_reuses_mesh3_transform_signature():
     for ell in [0, 2]:
         pole = poles.get(ell)
         selected = rebinned.get(ell)
-        coord_transform = pole._transform(slice(0, None, 3), axis='k', name='k', full=False)
-        value_transform = pole._transform(slice(0, None, 3), axis='k', name='value')
-        nmodes_transform = pole._transform(slice(0, None, 3), axis='k', name='nmodes')
+
+        def toarray(transform):
+            if hasattr(transform, 'toarray'):
+                return transform.toarray()
+            return transform
+
+        coord_transform = toarray(pole._transform(slice(0, None, 3), axis='k', name='k', full=False))
+        value_transform = toarray(pole._transform(slice(0, None, 3), axis='k', name='value'))
+        nmodes_transform = toarray(pole._transform(slice(0, None, 3), axis='k', name='nmodes'))
 
         expected_k = np.tensordot(coord_transform, pole.k, axes=([1], [0]))
         expected_value = value_transform.dot(pole.value())
@@ -1261,3 +1267,4 @@ if __name__ == '__main__':
     test_io()
     test_external()
     test_wrap()
+    test_select_reuses_mesh3_transform_signature()
