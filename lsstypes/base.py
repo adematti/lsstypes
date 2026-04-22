@@ -909,6 +909,33 @@ class ObservableLeaf(object):
         _check_data_shapes(self)
         return new
 
+    def _transform_cache_key(self, name=None, full=None):
+        """Return a cache key for transforms that share the same weighting and matrix shape."""
+        if isinstance(name, tuple):
+            weight, normalized = name
+        else:
+            binweight = getattr(self, '_binweight', None)
+            if binweight is None:
+                weight, normalized = False, True
+            else:
+                weight, normalized = binweight(name=name)
+
+        if weight is False:
+            weight_key = ('unweighted',)
+        elif weight is None:
+            weight_key = ('weighted_none',)
+        else:
+            weight_key = ('weighted', id(weight))
+
+        matrix_mode = 'reduced'
+        if len(self.shape) > 1:
+            if weight is not False:
+                matrix_mode = 'full' if (full or full is None) else 'reduced'
+            elif full:
+                matrix_mode = 'full'
+
+        return weight_key, normalized, matrix_mode
+
     def select(self, center='mid_if_edges', **limits):
         """
         Select a range in one or more coordinates.
@@ -953,11 +980,14 @@ class ObservableLeaf(object):
                 shape = tuple(len(_data[ax]) if ax == axis else len(new._data[ax]) for ax in new._coords_names)
                 if axis_edges in new._data:
                     _data[axis_edges] = edges
-                _cache = {}
+                # Cache transforms by effective weighting/matrix mode instead of field name.
+                _cache = {new._transform_cache_key(name=axis, full=False): transform}
                 for name in new._values_names:
                     tmp = _nan_to_zero(new._data[name])
-                    if name not in _cache: _cache[name] = new._transform(limit, axis=axis, name=name)
-                    matrix = _cache[name]
+                    cache_key = new._transform_cache_key(name=name)
+                    if cache_key not in _cache:
+                        _cache[cache_key] = new._transform(limit, axis=axis, name=name)
+                    matrix = _cache[cache_key]
                     if matrix.shape[1] == tmp.shape[iaxis]:  # compressed version
                         _data[name] = np.moveaxis(np.tensordot(matrix, tmp, axes=([1], [iaxis])), 0, iaxis)
                     else:

@@ -10,6 +10,32 @@ from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole, M
 from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood, ObservableLike
 
 
+def _make_mesh3_spectrum_poles(seed=42):
+    rng = np.random.RandomState(seed=seed)
+    base_edges = np.linspace(0., 0.2, 13)
+    base_edges = np.column_stack([base_edges[:-1], base_edges[1:]])
+    grid = np.meshgrid(*([np.arange(base_edges.shape[0])] * 3), sparse=False, indexing='ij')
+    index = np.column_stack([tmp.ravel() for tmp in grid])
+    index = index[(index[:, 0] <= index[:, 1]) & (index[:, 1] <= index[:, 2])]
+    k_edges = np.stack([base_edges[index[:, iaxis]] for iaxis in range(3)], axis=1)
+    k = np.mean(k_edges, axis=-1)
+    nmodes = np.arange(1, index.shape[0] + 1, dtype='f8')
+
+    poles = []
+    for ell in [0, 2]:
+        poles.append(
+            Mesh3SpectrumPole(
+                k=k,
+                k_edges=k_edges,
+                nmodes=nmodes * (ell + 1),
+                num_raw=rng.uniform(size=k.shape[0]),
+                ell=ell,
+                basis='scoccimarro',
+            )
+        )
+    return Mesh3SpectrumPoles(poles, ells=[0, 2])
+
+
 def test_tree():
 
     test_dir = Path('_tests')
@@ -718,6 +744,67 @@ def test_types(show=False):
     value, covariance = correlation.project(kw_covariance=dict())
     value.plot(show=show)
     covariance.plot(show=show)
+
+
+def test_select_reuses_mesh3_transform_signature():
+    poles = _make_mesh3_spectrum_poles()
+    rebinned = poles.select(k=slice(0, None, 3))
+
+    for ell in [0, 2]:
+        pole = poles.get(ell)
+        selected = rebinned.get(ell)
+        coord_transform = pole._transform(slice(0, None, 3), axis='k', name='k', full=False)
+        value_transform = pole._transform(slice(0, None, 3), axis='k', name='value')
+        nmodes_transform = pole._transform(slice(0, None, 3), axis='k', name='nmodes')
+
+        expected_k = np.tensordot(coord_transform, pole.k, axes=([1], [0]))
+        expected_value = value_transform.dot(pole.value())
+        expected_nmodes = nmodes_transform.dot(pole.nmodes)
+        wrong_nmodes = value_transform.dot(pole.nmodes)
+
+        assert np.allclose(coord_transform, value_transform)
+        assert not np.allclose(value_transform, nmodes_transform)
+        assert np.allclose(selected.k, expected_k)
+        assert np.allclose(selected.value(), expected_value)
+        assert np.allclose(selected.nmodes, expected_nmodes)
+        assert not np.allclose(selected.nmodes, wrong_nmodes)
+
+
+def test_select_keeps_multidim_coordinate_and_value_transforms_separate():
+    s_edges = np.linspace(0., 80., 9)
+    s_edges = np.column_stack([s_edges[:-1], s_edges[1:]])
+    mu_edges = np.linspace(-1., 1., 7)
+    mu_edges = np.column_stack([mu_edges[:-1], mu_edges[1:]])
+    s = np.mean(s_edges, axis=-1)
+    mu = np.mean(mu_edges, axis=-1)
+
+    counts = np.arange(1, s.size * mu.size + 1, dtype='f8').reshape(s.size, mu.size)
+    norm = 1. + counts[::-1]
+    observable = Count2(
+        counts=counts,
+        norm=norm,
+        s=s,
+        mu=mu,
+        s_edges=s_edges,
+        mu_edges=mu_edges,
+        coords=['s', 'mu'],
+    )
+
+    rebinned = observable.select(s=slice(0, None, 2))
+    coord_transform = observable._transform(slice(0, None, 2), axis='s', name='s', full=False)
+    value_transform = observable._transform(slice(0, None, 2), axis='s', name='normalized_counts')
+    norm_transform = observable._transform(slice(0, None, 2), axis='s', name='norm')
+
+    expected_s = np.tensordot(coord_transform, observable.s, axes=([1], [0]))
+    expected_counts = np.tensordot(value_transform, observable.normalized_counts, axes=([1], [0]))
+    expected_norm = np.tensordot(norm_transform, observable.norm, axes=([1], [0]))
+    wrong_counts = np.tensordot(coord_transform, observable.normalized_counts, axes=([1], [0]))
+
+    assert not np.allclose(coord_transform, value_transform)
+    assert np.allclose(rebinned.s, expected_s)
+    assert np.allclose(rebinned.normalized_counts, expected_counts)
+    assert np.allclose(rebinned.norm, expected_norm)
+    assert not np.allclose(rebinned.normalized_counts, wrong_counts)
 
 
 def test_sparse():
