@@ -1228,11 +1228,6 @@ class Count2Correlation(LeafLikeObservableTree):
         Additional attributes.
     **kwargs : dict
         Pair count observables, e.g. DD, RR, DR, RD, DS, SD, SS.
-
-    Attributes
-    ----------
-    realizations : list
-        List of (unique) realizations.
     """
 
     _name = 'count2_correlation'
@@ -1378,6 +1373,11 @@ class Count2JackknifeCorrelation(Count2Correlation):
         Additional attributes.
     kwargs : dict
         Pair count observables, e.g. DD, RR, DR, RD, DS, SD, SS.
+
+    Attributes
+    ----------
+    realizations : list
+        List of (unique) realizations.
     """
     _name = 'count2_jackknife_correlation'
 
