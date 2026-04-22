@@ -1707,7 +1707,7 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
     from scipy import special
     assert list(estimator.coords()) == ['s', 'mu']
     if ells is None: ells = [0, 2, 4]
-    isscalar = not isinstance(ells, list)
+    isscalar = np.isscalar(ells)
     if isscalar: ells = [ells]
     ells = list(ells)
     sedges = estimator.edges('s')
@@ -1789,7 +1789,7 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
     kw_covariance = dict(kw_covariance or {})
     assert list(estimator.coords()) == ['s', 'mu']
     if wedges is None: wedges = [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.]
-    isscalar = not isinstance(wedges, list)
+    isscalar = np.isscalar(wedges)
     if isscalar: wedges = [wedges]
     if np.ndim(wedges[0]) == 0: wedges = [wedges]
     sedges = estimator.edges('s')
