@@ -557,6 +557,36 @@ def sparse_tensordot(matrix, tmp, axis):
     return out
 
 
+def _resolve_transform_signature(observable, name=None, full=None):
+    """Resolve transform weighting, shape mode, and cache key for a field."""
+    undefined_weight = False
+    if isinstance(name, tuple):
+        weight, normalized = name
+    else:
+        binweight = getattr(observable, '_binweight', None)
+        if binweight is None:
+            undefined_weight = True
+            weight, normalized = False, True
+        else:
+            weight, normalized = binweight(name=name)
+
+    use_full = len(observable.shape) > 1 and (
+        (weight is not False and (full or full is None)) or
+        (weight is False and full)
+    )
+
+    if weight is False:
+        weight_key = ('unweighted',)
+    elif weight is None:
+        weight_key = ('weighted_none',)
+    else:
+        weight_key = ('weighted', id(weight))
+
+    matrix_mode = 'full' if use_full else 'reduced'
+    cache_key = (weight_key, normalized, matrix_mode)
+    return weight, normalized, use_full, cache_key, undefined_weight
+
+
 @register_type
 class ObservableLeaf(object):
     """A compressed observable with named values and coordinates, supporting slicing, selection, and plotting."""
@@ -775,16 +805,7 @@ class ObservableLeaf(object):
                 return index, self.edges(axis=axis)
             return index
 
-        undefined_weight = False
-        if isinstance(name, tuple):
-            weight, normalized = name
-        else:
-            binweight = getattr(self, '_binweight', None)
-            if binweight is None:
-                undefined_weight = True
-                weight, normalized = False, True
-            else:
-                weight, normalized = binweight(name=name)
+        weight, normalized, use_full, _, undefined_weight = _resolve_transform_signature(self, name=name, full=full)
 
         def _format_slice(lim, coords):
             if isinstance(lim, tuple):
@@ -939,15 +960,14 @@ class ObservableLeaf(object):
             warnings.warn('Non-trivial rebinning requires a _binweight function to be defined')
 
         if weight is not False:
-            if len(shape) > 1:
-                if full or full is None:
-                    mask = _build_big_tensor(mask, shape, axis=iaxis)[0]
-                    weight = np.ravel(weight) if weight is not None else 1
-                else:
-                    weight = np.sum(weight, axis=tuple(iax for iax in range(weight.ndim) if iax != iaxis))
+            if use_full:
+                mask = _build_big_tensor(mask, shape, axis=iaxis)[0]
+                weight = np.ravel(weight) if weight is not None else 1
+            elif len(shape) > 1:
+                weight = np.sum(weight, axis=tuple(iax for iax in range(weight.ndim) if iax != iaxis))
             matrix = multiply(mask, weight)
         else:
-            if full and len(shape) > 1:
+            if use_full:
                 mask = _build_big_tensor(mask, shape, axis=iaxis)[0]
             matrix = mask * 1
         if normalized:
@@ -977,33 +997,6 @@ class ObservableLeaf(object):
         _check_data_names(self)
         _check_data_shapes(self)
         return new
-
-    def _transform_cache_key(self, name=None, full=None):
-        """Return a cache key for transforms that share the same weighting and matrix shape."""
-        if isinstance(name, tuple):
-            weight, normalized = name
-        else:
-            binweight = getattr(self, '_binweight', None)
-            if binweight is None:
-                weight, normalized = False, True
-            else:
-                weight, normalized = binweight(name=name)
-
-        if weight is False:
-            weight_key = ('unweighted',)
-        elif weight is None:
-            weight_key = ('weighted_none',)
-        else:
-            weight_key = ('weighted', id(weight))
-
-        matrix_mode = 'reduced'
-        if len(self.shape) > 1:
-            if weight is not False:
-                matrix_mode = 'full' if (full or full is None) else 'reduced'
-            elif full:
-                matrix_mode = 'full'
-
-        return weight_key, normalized, matrix_mode
 
     def select(self, center='mid_if_edges', **limits):
         """
@@ -1050,10 +1043,10 @@ class ObservableLeaf(object):
                 if axis_edges in new._data:
                     _data[axis_edges] = edges
                 # Cache transforms by effective weighting/matrix mode instead of field name.
-                _cache = {new._transform_cache_key(name=axis, full=False): transform}
+                _cache = {_resolve_transform_signature(new, name=axis, full=False)[3]: transform}
                 for name in new._values_names:
                     tmp = _nan_to_zero(new._data[name])
-                    cache_key = new._transform_cache_key(name=name)
+                    cache_key = _resolve_transform_signature(new, name=name)[3]
                     if cache_key not in _cache:
                         _cache[cache_key] = new._transform(limit, axis=axis, name=name)
                     matrix = _cache[cache_key]

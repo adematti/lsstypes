@@ -797,9 +797,15 @@ def test_select_keeps_multidim_coordinate_and_value_transforms_separate():
     )
 
     rebinned = observable.select(s=slice(0, None, 2))
-    coord_transform = observable._transform(slice(0, None, 2), axis='s', name='s', full=False)
-    value_transform = observable._transform(slice(0, None, 2), axis='s', name='normalized_counts')
-    norm_transform = observable._transform(slice(0, None, 2), axis='s', name='norm')
+
+    def toarray(transform):
+        if hasattr(transform, 'toarray'):
+            return transform.toarray()
+        return transform
+
+    coord_transform = toarray(observable._transform(slice(0, None, 2), axis='s', name='s', full=False))
+    value_transform = toarray(observable._transform(slice(0, None, 2), axis='s', name='normalized_counts'))
+    norm_transform = toarray(observable._transform(slice(0, None, 2), axis='s', name='norm'))
 
     expected_s = np.tensordot(coord_transform, observable.s, axes=([1], [0]))
     expected_counts = np.tensordot(value_transform, observable.normalized_counts, axes=([1], [0]))
