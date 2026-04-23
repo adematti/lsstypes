@@ -1796,7 +1796,7 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
     if wedges is None: wedges = [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.]
     isscalar = np.shape(wedges) == (2,) # each wedge is a pair of numbers
     if np.ndim(wedges) not in (1, 2) or (np.ndim(wedges) == 1 and len(wedges) < 2) or (np.ndim(wedges) == 2 and wedges.shape[-1] != 2): raise ValueError('wedges should be a list of (min, max) pairs, a single (min, max) pair, or a list of mu edges')
-    if np.ndim(wedges) == 1 and len(wedges) > 2: wedges = list(zip(wedges[:-1], wedges[1:])) # convert from a plain list of mu edges to list of (min, max); also covers the "scalar" case of a single pair of numbers
+    if np.ndim(wedges) == 1: wedges = list(zip(wedges[:-1], wedges[1:])) # convert from a plain list of mu edges to list of (min, max); also covers the "scalar" case of a single pair of numbers
     sedges = estimator.edges('s')
     muedges = estimator.edges('mu')
     mumid = np.mean(muedges, axis=-1)
