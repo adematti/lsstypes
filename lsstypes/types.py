@@ -1780,7 +1780,7 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
 
     kw_covariance : dict, optional
         Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
-        If provided, also returns the covariance matrix of the multipoles.
+        If provided, also returns the covariance matrix of the wedges.
 
     Returns
     -------
