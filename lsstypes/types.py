@@ -1305,7 +1305,7 @@ class Count2Correlation(LeafLikeObservableTree):
         wedges : list of pairs, a single pair, or a list of >=2 numbers, optional
             :math:`mu`-edges (min, max) of each wedge, e.g. [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)];
             or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5);
-            or a plain list of :math:`\mu` edges, e.g. [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.].
+            or a plain list of :math:`\mu` edges, e.g. [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.] (default).
         ignore_nan : bool, optional
             If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
         kw_window : dict, optional
@@ -1773,7 +1773,7 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
     wedges : list of pairs, a single pair, or a list of >=2 numbers, optional
         :math:`mu`-edges (min, max) of each wedge, e.g. [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)];
         or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5);
-        or a plain list of :math:`\mu` edges, e.g. [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.].
+        or a plain list of :math:`\mu` edges, e.g. [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.] (default).
 
     ignore_nan : bool, optional
         If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
