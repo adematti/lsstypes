@@ -1300,8 +1300,12 @@ class Count2Correlation(LeafLikeObservableTree):
         ----------
         mode : str, optional
             Projection mode ('poles', 'wedges', 'wp'). If None, inferred from kwargs.
-        ells : list of int, optional
-            Orders of Legendre polynomials to project onto (default is ``[0, 2, 4]``).
+        ells : list of int or int, optional
+            Order(s) of Legendre polynomials to project onto (default is ``[0, 2, 4]``).
+        wedges : list of pairs, a single pair, or a list of >=2 numbers, optional
+            :math:`mu`-edges (min, max) of each wedge, e.g. [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)];
+            or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5);
+            or a plain list of :math:`\mu` edges, e.g. [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.].
         ignore_nan : bool, optional
             If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
         kw_window : dict, optional
@@ -1311,11 +1315,11 @@ class Count2Correlation(LeafLikeObservableTree):
             If provided, also returns the window matrix for convolving theory.
         kw_covariance : dict, optional
             Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
-            If provided, also returns the covariance matrix of the multipoles.
+            If provided, also returns the covariance matrix of the multipoles/wedges/projected correlation function.
 
         Returns
         -------
-        poles : Count2CorrelationPole, Count2CorrelationPoles, Count2CorrelationWedge, Count2CorrelationWedges, Count2CorrelationWp
+        poles_wedges_or_wp : Count2CorrelationPole, Count2CorrelationPoles, Count2CorrelationWedge, Count2CorrelationWedges, Count2CorrelationWp
             Correlation function multipoles or wedges or projected correlation function.
         window : WindowMatrix, optional
             Window matrix for convolving theory (returned if ``kw_window`` is provided).
