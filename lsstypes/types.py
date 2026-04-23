@@ -1672,8 +1672,8 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
     estimator : Count2Correlation, Count2JackknifeCorrelation
         Estimator for the :math:`(s, \mu)` correlation function.
 
-    ells : list of int, optional
-        Orders of Legendre polynomials to project onto (default is ``[0, 2, 4]``).
+    ells : list of int or int, optional
+        Order(s) of Legendre polynomials to project onto (default is ``[0, 2, 4]``).
 
     ignore_nan : bool, optional
         If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
@@ -1707,7 +1707,7 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
     from scipy import special
     assert list(estimator.coords()) == ['s', 'mu']
     if ells is None: ells = [0, 2, 4]
-    isscalar = np.isscalar(ells)
+    isscalar = np.ndim(ells) == 0 # this condition is slightly preferred to np.isscalar since it also allows for 0-dim arrays
     if isscalar: ells = [ells]
     ells = list(ells)
     sedges = estimator.edges('s')
