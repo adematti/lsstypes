@@ -1766,9 +1766,10 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
     estimator : Count2Correlation
         Estimator for the :math:`(s, \mu)` correlation function.
 
-    wedges : list of tuples, optional
-        :math:`mu`-edges (min, max) of each wedge, e.g. [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)]
-        or [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.]
+    wedges : list of pairs, a single pair, or a list of >=2 numbers, optional
+        :math:`mu`-edges (min, max) of each wedge, e.g. [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)];
+        or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5);
+        or a plain list of :math:`\mu` edges, e.g. [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.].
 
     ignore_nan : bool, optional
         If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
@@ -1789,9 +1790,9 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
     kw_covariance = dict(kw_covariance or {})
     assert list(estimator.coords()) == ['s', 'mu']
     if wedges is None: wedges = [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.]
-    isscalar = np.isscalar(wedges)
-    if isscalar: wedges = [wedges]
-    if np.ndim(wedges[0]) == 0: wedges = [wedges]
+    isscalar = np.shape(wedges) == (2,) # each wedge is a pair of numbers
+    if np.ndim(wedges) not in (1, 2) or (np.ndim(wedges) == 1 and len(wedges) < 2) or (np.ndim(wedges) == 2 and wedges.shape[-1] != 2): raise ValueError('wedges should be a list of (min, max) pairs, a single (min, max) pair, or a list of mu edges')
+    if np.ndim(wedges) == 1 and len(wedges) > 2: wedges = list(zip(wedges[:-1], wedges[1:])) # convert from a plain list of mu edges to list of (min, max); also covers the "scalar" case of a single pair of numbers
     sedges = estimator.edges('s')
     muedges = estimator.edges('mu')
     mumid = np.mean(muedges, axis=-1)
