@@ -543,17 +543,16 @@ def sparse_tensordot(matrix, tmp, axis):
             f"but tmp.shape[{iaxis}] = {tmp.shape[iaxis]}"
         )
 
-    # Bring contracted axis to front: (n, ...)
-    tmp_front = np.moveaxis(tmp, iaxis, 0)
-
-    # Flatten trailing dimensions: (n, k)
+    tmp_front = np.moveaxis(tmp, iaxis, 0)      # (n, ...)
     tmp_2d = tmp_front.reshape(tmp_front.shape[0], -1)
 
-    # Sparse matmul: (m, n) @ (n, k) -> (m, k)
-    out_2d = matrix @ tmp_2d
+    out_2d = matrix @ tmp_2d                   # (m, k)
 
-    # Reshape to (m, tmp.shape without contracted axis)
     out = out_2d.reshape((matrix.shape[0],) + tmp_front.shape[1:])
+
+    # Match np.moveaxis(np.tensordot(...), 0, axis)
+    out = np.moveaxis(out, 0, iaxis)
+
     return out
 
 

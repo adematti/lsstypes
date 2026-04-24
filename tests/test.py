@@ -449,11 +449,16 @@ def test_rebin():
         counts = Count2(counts=counts, norm=np.ones_like(counts), s=s, mu=mu, s_edges=s_edges, mu_edges=mu_edges, coords=['s', 'mu'], attrs=dict(los='x'))
         return counts
 
+    def toarray(transform):
+        if hasattr(transform, 'toarray'):
+            return transform.toarray()
+        return transform
+
     counts = get_counts()
-    matrix = counts._transform(slice(1, None, 2), axis=1, name='normalized_counts', full=True)
+    matrix = toarray(counts._transform(slice(1, None, 2), axis=1, name='normalized_counts', full=True))
     assert matrix.shape[1] == counts.size
     tmp = matrix.dot(counts.normalized_counts.ravel())
-    matrix = counts._transform(slice(1, None, 2), axis=1, name='normalized_counts')
+    matrix = toarray(counts._transform(slice(1, None, 2), axis=1, name='normalized_counts'))
     tmp2 = np.moveaxis(np.tensordot(matrix, counts.normalized_counts, axes=(1, 1)), 0, 1).ravel()
     assert np.allclose(tmp, tmp2)
     counts2 = counts.select(s=slice(0, None, 2))
