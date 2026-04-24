@@ -1302,10 +1302,9 @@ class Count2Correlation(LeafLikeObservableTree):
             Projection mode ('poles', 'wedges', 'wp'). If None, inferred from kwargs.
         ells : list of int, or a single int, optional
             Order(s) of Legendre polynomials to project onto (default is ``[0, 2, 4]``).
-        wedges : list of pairs, a single pair, or a list of >2 numbers, optional
-            :math:`mu`-edges (min, max) of each wedge, e.g. [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)];
-            or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5);
-            or a plain list of :math:`\mu` edges, e.g. [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.] (default).
+        wedges : list of pairs, or a single pair, optional
+            :math:`mu`-edges (min, max) of each wedge, e.g. the default value [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)],
+            or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5).
         ignore_nan : bool, optional
             If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
         kw_window : dict, optional
@@ -1770,10 +1769,9 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
     estimator : Count2Correlation
         Estimator for the :math:`(s, \mu)` correlation function.
 
-    wedges : list of pairs, a single pair, or a list of >2 numbers, optional
-        :math:`mu`-edges (min, max) of each wedge, e.g. [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)];
-        or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5);
-        or a plain list of :math:`\mu` edges, e.g. [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.] (default).
+    wedges : list of pairs, or a single pair, optional
+        :math:`mu`-edges (min, max) of each wedge, e.g. the default value [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)],
+        or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5).
 
     ignore_nan : bool, optional
         If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
@@ -1793,10 +1791,9 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
     return_covariance = kw_covariance is not None
     kw_covariance = dict(kw_covariance or {})
     assert list(estimator.coords()) == ['s', 'mu']
-    if wedges is None: wedges = [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.]
-    isscalar = np.shape(wedges) == (2,) # a plain (min, max) pair represents a single wedge. if wrapped in a list [(min, max)], it will not be determined as a scalar here, but I think this makes sense, allowing the user to get Count2CorrelationWedges if they want to.
-    if np.ndim(wedges) == 1 and len(wedges) >= 2: wedges = list(zip(wedges[:-1], wedges[1:])) # convert from a plain list of mu edges to list of (min, max) pairs; also covers the "scalar" case of a single pair of numbers
-    elif not (np.ndim(wedges) == 2 and wedges.shape[1] == 2): raise ValueError('wedges should be a list of (min, max) pairs, a single (min, max) pair, or a list of mu edges')
+    if wedges is None: wedges = [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)]
+    assert np.ndim(wedges) in (1, 2) and np.shape(wedges)[-1] == 2, 'wedges should be a list of (min, max) pairs or a single (min, max) pair'
+    isscalar = np.ndim(wedges) == 1 # a plain (min, max) pair represents a single wedge
     sedges = estimator.edges('s')
     muedges = estimator.edges('mu')
     mumid = np.mean(muedges, axis=-1)
