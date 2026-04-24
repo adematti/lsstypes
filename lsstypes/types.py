@@ -1710,6 +1710,7 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
     from scipy import special
     assert list(estimator.coords()) == ['s', 'mu']
     if ells is None: ells = [0, 2, 4]
+    assert np.ndim(ells) <= 1, 'ells should be a single int or a list of ints'
     isscalar = np.ndim(ells) == 0 # this condition is slightly preferred to np.isscalar since it also allows for 0-dim arrays
     if isscalar: ells = [ells]
     ells = list(ells)
