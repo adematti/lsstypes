@@ -1228,11 +1228,6 @@ class Count2Correlation(LeafLikeObservableTree):
         Additional attributes.
     **kwargs : dict
         Pair count observables, e.g. DD, RR, DR, RD, DS, SD, SS.
-
-    Attributes
-    ----------
-    realizations : list
-        List of (unique) realizations.
     """
 
     _name = 'count2_correlation'
@@ -1305,8 +1300,11 @@ class Count2Correlation(LeafLikeObservableTree):
         ----------
         mode : str, optional
             Projection mode ('poles', 'wedges', 'wp'). If None, inferred from kwargs.
-        ells : list of int, optional
-            Orders of Legendre polynomials to project onto (default is ``[0, 2, 4]``).
+        ells : list of int, or a single int, optional
+            Order(s) of Legendre polynomials to project onto (default is ``[0, 2, 4]``).
+        wedges : list of pairs, or a single pair, optional
+            :math:`mu`-edges (min, max) of each wedge, e.g. the default value [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)],
+            or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5).
         ignore_nan : bool, optional
             If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
         kw_window : dict, optional
@@ -1316,11 +1314,11 @@ class Count2Correlation(LeafLikeObservableTree):
             If provided, also returns the window matrix for convolving theory.
         kw_covariance : dict, optional
             Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
-            If provided, also returns the covariance matrix of the multipoles.
+            If provided, also returns the covariance matrix of the multipoles/wedges/projected correlation function.
 
         Returns
         -------
-        poles : Count2CorrelationPole, Count2CorrelationPoles, Count2CorrelationWedge, Count2CorrelationWedges, Count2CorrelationWp
+        poles_wedges_or_wp : Count2CorrelationPole, Count2CorrelationPoles, Count2CorrelationWedge, Count2CorrelationWedges, Count2CorrelationWp
             Correlation function multipoles or wedges or projected correlation function.
         window : WindowMatrix, optional
             Window matrix for convolving theory (returned if ``kw_window`` is provided).
@@ -1378,6 +1376,11 @@ class Count2JackknifeCorrelation(Count2Correlation):
         Additional attributes.
     kwargs : dict
         Pair count observables, e.g. DD, RR, DR, RD, DS, SD, SS.
+
+    Attributes
+    ----------
+    realizations : list
+        List of (unique) realizations.
     """
     _name = 'count2_jackknife_correlation'
 
@@ -1672,8 +1675,8 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
     estimator : Count2Correlation, Count2JackknifeCorrelation
         Estimator for the :math:`(s, \mu)` correlation function.
 
-    ells : list of int, optional
-        Orders of Legendre polynomials to project onto (default is ``[0, 2, 4]``).
+    ells : list of int, or a single int, optional
+        Order(s) of Legendre polynomials to project onto (default is ``[0, 2, 4]``).
 
     ignore_nan : bool, optional
         If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
@@ -1707,7 +1710,8 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
     from scipy import special
     assert list(estimator.coords()) == ['s', 'mu']
     if ells is None: ells = [0, 2, 4]
-    isscalar = not isinstance(ells, list)
+    assert np.ndim(ells) <= 1, 'ells should be a single int or a list of ints'
+    isscalar = np.ndim(ells) == 0 # this condition is slightly preferred to np.isscalar since it also allows for 0-dim arrays
     if isscalar: ells = [ells]
     ells = list(ells)
     sedges = estimator.edges('s')
@@ -1766,16 +1770,16 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
     estimator : Count2Correlation
         Estimator for the :math:`(s, \mu)` correlation function.
 
-    wedges : list of tuples, optional
-        :math:`mu`-edges (min, max) of each wedge, e.g. [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)]
-        or [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.]
+    wedges : list of pairs, or a single pair, optional
+        :math:`mu`-edges (min, max) of each wedge, e.g. the default value [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)],
+        or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5).
 
     ignore_nan : bool, optional
         If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
 
     kw_covariance : dict, optional
         Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
-        If provided, also returns the covariance matrix of the multipoles.
+        If provided, also returns the covariance matrix of the wedges.
 
     Returns
     -------
@@ -1788,10 +1792,9 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
     return_covariance = kw_covariance is not None
     kw_covariance = dict(kw_covariance or {})
     assert list(estimator.coords()) == ['s', 'mu']
-    if wedges is None: wedges = [-1., -2. / 3, -1. / 3, 0., 1. / 3, 2. / 3, 1.]
-    isscalar = not isinstance(wedges, list)
-    if isscalar: wedges = [wedges]
-    if np.ndim(wedges[0]) == 0: wedges = [wedges]
+    if wedges is None: wedges = [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)]
+    assert np.ndim(wedges) in (1, 2) and np.shape(wedges)[-1] == 2, 'wedges should be a list of (min, max) pairs or a single (min, max) pair'
+    isscalar = np.ndim(wedges) == 1 # a plain (min, max) pair represents a single wedge
     sedges = estimator.edges('s')
     muedges = estimator.edges('mu')
     mumid = np.mean(muedges, axis=-1)
