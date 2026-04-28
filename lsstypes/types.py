@@ -1020,16 +1020,12 @@ class Count2Jackknife(LeafLikeObservableTree):
     ----------
     ii_counts : dict
         Dictionary of pair counts for each jackknife realization (auto-pairs).
-
     ij_counts : dict
         Dictionary of pair counts for each jackknife realization (cross-pairs: i-j).
-
     ji_counts : dict
         Dictionary of pair counts for each jackknife realization (cross-pairs: j-i).
-
     realizations : list, optional
         List of realization labels (default: keys of `ii_counts`).
-
     attrs : dict, optional
         Additional attributes.
     """
@@ -1121,7 +1117,6 @@ class Count2Jackknife(LeafLikeObservableTree):
         ----------
         ii : int
             Label of jackknife realization.
-
         correction : str, default='mohammad21'
             Correction to apply to computed counts.
             If ``None``, no correction is applied.
@@ -1204,11 +1199,69 @@ def _get_project_mode(estimator, mode=None, **kwargs):
             mode = 'wp'
         else:
             mode = None
+            if isinstance(estimator.get(estimator.count_names[0]), Count2Poles):
+                mode = 'poles'
     else:
         assert isinstance(mode, str)
         mode = mode.lower()
     return mode, kwargs
 
+
+@register_type
+class Count2Pole(Count2):
+    """
+    Container for pair count pole.
+
+    Stores binned pair counts and normalization for correlation function estimation.
+
+    Parameters
+    ----------
+    counts : array-like
+        Raw pair counts for each bin.
+    norm : array-like, optional
+        Normalization factor (default: ones).
+    attrs : dict, optional
+        Additional attributes.
+    kwargs : dict
+        Additional keyword arguments for initialization.
+        Notably, "coords".
+    """
+    _name = 'count2_pole'
+
+    def __init__(self, counts=None, norm=None, attrs=None, ell=None, **kwargs):
+        super().__init__(counts=counts, norm=norm, attrs=attrs, **kwargs)
+        if ell is not None:
+            self._meta['ell'] = tuple(ell)
+
+
+@register_type
+class Count2Poles(ObservableTree):
+    r"""
+    Container for multiple pair poles :math:`C_{\ell}`.
+
+    Stores a collection of `Count2Pole` objects for different multipole orders :math:`\ell`.
+
+    Parameters
+    ----------
+    poles : list of Count2Pole
+        List of count multipole objects.
+    ells : list of int or tuples, optional
+        Multipole orders :math:`\ell` for each pole (default: inferred from `poles`).
+    attrs : dict, optional
+        Additional attributes.
+    """
+    _name = 'count2_poles'
+
+    def __init__(self, poles, ells=None, attrs=None):
+        """Initialize multipoles."""
+        if ells is None: ells = [pole.ell for pole in poles]
+        super().__init__(poles, ells=ells, attrs=attrs)
+
+    def ravel(self):
+        return self.map(lambda leaf: leaf.ravel())
+
+    def unravel(self):
+        return self.map(lambda leaf: leaf.unravel())
 
 
 @register_type
@@ -1255,28 +1308,6 @@ class Count2Correlation(LeafLikeObservableTree):
         super().__init__([kwargs[count_name] for count_name in count_names], count_names=count_names,
                          meta=dict(estimator=estimator, **(meta or {})), attrs=attrs)
 
-    def value(self):
-        """
-        Return the correlation function value.
-
-        Returns
-        -------
-        estimator : array
-        """
-        if self.estimator == 'landyszalay':
-            scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
-            corr = self.get('DD').value() - self.get('D'  + scount_name).value() - self.get(scount_name + 'D').value() + self.get(scount_name * 2).value()
-            value = corr / self.get('RR').value()
-        elif self.estimator == 'natural':
-            RR = self.get('RR').value()
-            scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
-            corr = self.get('DD').value() - self.get(scount_name * 2).value()
-            value = corr / self.get('RR').value()
-        else:
-            state = {name: self.get(name).value() for name in self.count_names}
-            value = eval(self.estimator, {}, state)
-        return value
-
     def coords(self, *args, **kwargs):
         """
         Get coordinate array(s).
@@ -1291,6 +1322,39 @@ class Count2Correlation(LeafLikeObservableTree):
         coords : array or dict
         """
         return self.get('RR' if self.estimator in ['landyszalay', 'natural'] else self.count_names[0]).coords(*args, **kwargs)
+
+    def value(self):
+        """
+        Return the correlation function value.
+
+        Returns
+        -------
+        estimator : array
+        """
+        def divide_RR(corr):
+            RR = self.get('RR')
+            if isinstance(RR, Count2Poles):
+                RR0 = RR.get(0).value()
+                RRbar = {ell: RR.get(ell).value() / RR0 for ell in RR.ells}
+                matrix = _build_edge_matrix2(RR.ells, RRbar)
+                corr = corr.reshape(matrix.shape[1:])
+                return np.tensordot(matrix, corr, axes=([1, 2], [0, 1]))
+            return corr / RR
+
+        if self.estimator == 'landyszalay':
+            scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
+            signs = {'DD': 1., 'DR': -1., 'RD': -1., 'RR': 1.}
+            signs = {name.replace('R', scount_name): sign for name, sign in signs.items()}
+            corr = sum(signs[name] * self.get(name).value() for name in signs)
+            value = divide_RR(corr)
+        elif self.estimator == 'natural':
+            scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
+            corr = self.get('DD').value() - self.get(scount_name * 2).value()
+            value = divide_RR(corr)
+        else:
+            state = {name: self.get(name).value() for name in self.count_names}
+            value = eval(self.estimator, {}, state)
+        return value
 
     def project(self, mode=None, **kwargs):
         """
@@ -1324,9 +1388,28 @@ class Count2Correlation(LeafLikeObservableTree):
             Window matrix for convolving theory (returned if ``kw_window`` is provided).
         covariance : CovarianceMatrix, optional
             Covariance matrix of the multipoles (returned if ``kw_covariance`` is provided).
-            """
+        """
         mode, kwargs = _get_project_mode(self, mode=mode, **kwargs)
         if mode == 'poles':
+            if isinstance(self.get('RR'), Count2Poles):
+                RR = self.get('RR')
+                if isinstance(RR, Count2Poles):
+                    coords, edges = RR.coords(), RR.edges()
+                    edges = {_edges_name(name): edges for name, edges in edges.items()}
+                    ells = kwargs.get('ells', None)
+                    if ells is None:
+                        ells = RR.ells
+                    isscalar = np.ndim(ells) == 0
+                    if isscalar: ells = [ells]
+                    ills = [RR.ells.index(ell) for ell in ells]
+                    RRR0 = RR.get(0)
+                    norm = self.get('DD').get(0).values('norm')
+                    poles = []
+                    for ill, ell in zip(ills, ells):
+                        pole = Count2CorrelationPole(**coords, **edges, value=value[ill], RRR0=RRR0.value(),
+                                                    norm=norm, ell=ell, attrs=self.attrs, **kwargs)
+                        poles.append(pole)
+                    poles = Count2CorrelationPoles(poles)
             return _project_to_poles(self, **kwargs)
         if mode == 'wedges':
             return _project_to_wedges(self, **kwargs)
@@ -1548,28 +1631,21 @@ def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_e
     counts : ndarray
         2D array of RR (random-random) weighted pair counts, shape ``(len(sedges), len(muedges))``.
         Used to weight the window matrix according to the survey geometry.
-
     sedges : array-like
         Bin edges for separation :math:`s` corresponding to `counts`.
-
     muedges : array-like
         Bin edges for angle :math:`\mu` corresponding to `counts`.
-
     out_sedges : list
         List of output :math:`s`-edges (observable bins).
-
     ells : tuple of int, optional
         Input theory multipoles :math:`\ell` (default is ``(0, 2, 4)``).
-
     out_ells : tuple of int, optional
         Output observable multipoles :math:`\ell` (default is ``(0, 2, 4)``).
-
     kind : str, optional
         Kind of window matrix to compute.
         'RR/RR', apply weights from RR pair counts both in numerator and denominator
         (such that the window matrix is essentially a rebinning matrix).
         'RR', apply weights from RR pair counts only in numerator.
-
     resolution : int, optional
         Number of evaluation points per ``sedges`` bin for the integral (higher values yield more accurate integration).
 
@@ -1577,10 +1653,8 @@ def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_e
     -------
     sin : ndarray
         Array of input theory coordinates (typically bin centers for :math:`s`).
-
     edgesin : ndarray
         Array of input theory bin edges.
-
     full_matrix : ndarray
         Window matrix mapping theory multipoles to observed binned multipoles.
         Shape depends on the number of output bins and multipoles.
@@ -1632,19 +1706,15 @@ def compute_RR2_window(RR, edges=None, ells=(0, 2, 4), ellsin=(0, 2, 4), kind='R
     ----------
     RR : Count2
         Random-random pair counts.
-
     edges : dict, optional
         Optional edges for 's' and 'mu' to override ``RR.edges()``.
-
     ells : tuple of int, optional
         Input theory multipoles :math:`\ell` (default is ``(0, 2, 4)``).
-
     kind : str, optional
         Kind of window matrix to compute.
         'RR/RR', apply weights from RR pair counts both in numerator and denominator
         (such that the window matrix is essentially a rebinning matrix).
         'RR', apply weights from RR pair counts only in numerator.
-
     resolution : int, optional
         Number of evaluation points per ``sedges`` bin for the integral (higher values yield more accurate integration).
 
@@ -1674,19 +1744,15 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
     ----------
     estimator : Count2Correlation, Count2JackknifeCorrelation
         Estimator for the :math:`(s, \mu)` correlation function.
-
     ells : list of int, or a single int, optional
         Order(s) of Legendre polynomials to project onto (default is ``[0, 2, 4]``).
-
     ignore_nan : bool, optional
         If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
-
     kw_window : dict, optional
         Optional arguments for window matrix calculation:
         - 'RR': :class:`Count2` instance with finer `s`-binning, to override ``estimator.get('RR')``
         - 'resolution' (default=1): number of evaluation points per RR-bin.
         If provided, also returns the window matrix for convolving theory.
-
     kw_covariance : dict, optional
         Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
         If provided, also returns the covariance matrix of the multipoles.
@@ -1695,10 +1761,8 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
     -------
     poles : Count2CorrelationPole or Count2CorrelationPoles
         Correlation function multipoles.
-
     covariance : CovarianceMatrix, optional
         Covariance matrix of the multipoles (returned if ``kw_covariance`` is provided).
-
     window : WindowMatrix, optional
         Window matrix for convolving theory (returned if ``kw_window`` is provided).
 
@@ -1769,14 +1833,11 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
     ----------
     estimator : Count2Correlation
         Estimator for the :math:`(s, \mu)` correlation function.
-
     wedges : list of pairs, or a single pair, optional
         :math:`mu`-edges (min, max) of each wedge, e.g. the default value [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)],
         or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5).
-
     ignore_nan : bool, optional
         If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
-
     kw_covariance : dict, optional
         Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
         If provided, also returns the covariance matrix of the wedges.
@@ -1785,7 +1846,6 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
     -------
     wedges : Count2CorrelationWedge or Count2CorrelationWedges
         Correlation function wedges.
-
     covariance : CovarianceMatrix, optional
         Covariance matrix of the wedges (returned if ``kw_covariance`` is provided).
     """
@@ -1843,10 +1903,8 @@ def _project_to_wp(estimator, ignore_nan=False, kw_covariance=None):
     ----------
     estimator : Count2Correlation
         Estimator for the :math:`(r_p, \pi)` correlation function.
-
     ignore_nan : bool, optional
         If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
-
     kw_covariance : dict, optional
         Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
         If provided, also returns the covariance matrix of the multipoles.
@@ -1855,7 +1913,6 @@ def _project_to_wp(estimator, ignore_nan=False, kw_covariance=None):
     -------
     wedges : Count2CorrelationWp
         Projected correlation function.
-
     covariance : CovarianceMatrix, optional
         Covariance matrix of the projected correlation function (returned if ``kw_covariance`` is provided).
     """
@@ -1955,7 +2012,6 @@ class Count2CorrelationPole(ObservableLeaf):
                 return [weight / sumweights for weight in weights]
             return [1] * len(observables)  # just sum norm
         raise ValueError(f'{name} weights not implemented')
-
 
     def _plabel(self, name):
         if name == 's':
@@ -2142,7 +2198,6 @@ class Count2CorrelationWedge(ObservableLeaf):
         return fig
 
 
-
 @register_type
 class Count2CorrelationWedges(ObservableTree):
     r"""
@@ -2295,14 +2350,14 @@ class Count2CorrelationWp(ObservableLeaf):
 @register_type
 class Count3(Count2):
     """
-    Container for three-point pair counts.
+    Container for triplet counts.
 
-    Stores binned pair counts and normalization for correlation function estimation.
+    Stores binned triplet counts and normalization for correlation function estimation.
 
     Parameters
     ----------
     counts : array-like
-        Raw pair counts for each bin.
+        Raw triplet counts for each bin.
     norm : array-like, optional
         Normalization factor (default: ones).
     attrs : dict, optional
@@ -2312,3 +2367,579 @@ class Count3(Count2):
         Notably, "coords".
     """
     _name = 'count3'
+
+    @property
+    def is_raveled(self):
+        return len(self._coords_names) == 1
+
+    def unravel(self):
+        """Unravel the coordinate axis 's' into 's1', 's2' (and 's3')."""
+        assert self.is_raveled, 'pole must be raveled to be unraveled!'
+        new = self.copy()
+        index, inverse = [], []
+        for idim, mid in enumerate(self.coords(0, center='mid_if_edges').T):
+            _, idx, inv = np.unique(mid, return_index=True, return_inverse=True)
+            index.append(idx)
+            inverse.append(inv)
+        coords = new._data.pop(self._coords_names[0])
+        coords = [coords[idx, idim] for idim, idx in enumerate(index)]
+        new._coords_names = coords_names = [f'{self._coords_names[0]}{idim + 1:d}' for idim, coord in enumerate(coords)]
+        for name, coord in zip(coords_names, coords):
+            new._data[name] = coord
+        edges_name = _edges_name(self._coords_names[0])
+        if edges_name in self._data:
+            edges = new._data.pop(edges_name)
+            edges = [edges[idx, idim] for idim, idx in enumerate(index)]
+            for name, edge in zip(coords_names, edges):
+                new._data[_edges_name(name)] = edge
+        index = []
+        for idim, mid in enumerate(self.coords(0, center='mid_if_edges').T):
+            idx = np.searchsorted(new.coords(idim, center='mid_if_edges'), mid, side='left')
+            index.append(idx)
+        for name in self._values_names:
+            new._data[name] = np.zeros_like(self._data[name], shape=tuple(len(coord) for coord in coords))
+            new._data[name][tuple(inverse)] = self._data[name]
+        return new
+
+    def ravel(self):
+        """Ravel the coordinate axes into a single axis 's'."""
+        assert not self.is_raveled, 'pole must be unraveled to be raveled!'
+        new = self.copy()
+        coords, edges = [], []
+        for axis in self._coords_names:
+            coords.append(new._data.pop(axis))
+            edges_name = _edges_name(axis)
+            if edges_name in new._data:
+                edges.append(new._data.pop(edges_name))
+
+        def product(*arrays):
+            arrays = np.meshgrid(*arrays, indexing='ij')
+            return np.column_stack([array.ravel() for array in arrays])
+
+        new._data[axis[:1]] = product(*coords)
+        if edges:
+            edges = [product(*[edge[..., i] for edge in edges]) for i in [0, 1]]
+            new._data[_edges_name(f'{axis[:1]}')] = np.concatenate([edge[..., None] for edge in edges], axis=-1)
+        new._coords_names = [axis[:1]]
+        for name in self._values_names:
+            new._data[name] = self._data[name].ravel()
+        return new
+
+
+
+@register_type
+class Count3Pole(Count3):
+    """
+    Container for triplet count pole.
+
+    Stores binned triplet counts and normalization for correlation function estimation.
+
+    Parameters
+    ----------
+    counts : array-like
+        Raw triplet counts for each bin.
+    norm : array-like, optional
+        Normalization factor (default: ones).
+    attrs : dict, optional
+        Additional attributes.
+    kwargs : dict
+        Additional keyword arguments for initialization.
+        Notably, "coords".
+    """
+    _name = 'count3_pole'
+
+    def __init__(self, counts=None, norm=None, attrs=None, ell=None, **kwargs):
+        super().__init__(counts=counts, norm=norm, attrs=attrs, **kwargs)
+        if ell is not None:
+            self._meta['ell'] = tuple(ell)  # (ell1, ell2, m)
+
+
+@register_type
+class Count3Poles(ObservableTree):
+    r"""
+    Container for multiple triplet poles :math:`C_{\ell_1 \ell_2}^{m}`.
+
+    Stores a collection of `Count3Pole` objects for different multipole orders :math:`{\ell_1 \ell_2}^{m}`.
+
+    Parameters
+    ----------
+    poles : list of Count3Pole
+        List of bispectrum multipole objects.
+    ells : list of int or tuples, optional
+        Multipole orders :math:`\ell` for each pole (default: inferred from `poles`).
+    attrs : dict, optional
+        Additional attributes.
+    """
+    _name = 'count3_poles'
+
+    def __init__(self, poles, ells=None, attrs=None):
+        """Initialize multipoles."""
+        if ells is None: ells = [pole.ell for pole in poles]
+        super().__init__(poles, ells=ells, attrs=attrs)
+
+    def ravel(self):
+        return self.map(lambda leaf: leaf.ravel())
+
+    def unravel(self):
+        return self.map(lambda leaf: leaf.unravel())
+
+
+@register_type
+class Count3Correlation(LeafLikeObservableTree):
+    """
+    Correlation function estimator for tgree-point statistics.
+
+    Supports Landy-Szalay and natural estimators, with or without shifted/random triplets.
+
+    Parameters
+    ----------
+    estimator : str, optional
+        Estimator type ('landyszalay' or 'natural'). Default is 'landyszalay'.
+    attrs : dict, optional
+        Additional attributes.
+    **kwargs : dict
+        Triplet count observables, e.g. DDD, RRR, DDR, DRD, RDD, DRR, RDR, RRD, or similarly with S
+    """
+    _name = 'count3_correlation'
+
+    def __init__(self, estimator='landyszalay', attrs=None, meta=None, **kwargs):
+        with_shifted = any('S' in key for key in kwargs)
+        if estimator == 'landyszalay':
+            count_names = ['DDD', 'RRR']
+            if with_shifted: count_names += ['DDS', 'DSD', 'SDD', 'DSS', 'SDS', 'SSD', 'SSS']
+            else: count_names += ['DDR', 'DRD', 'RDD', 'DRR', 'RDR', 'RRD']
+        elif estimator == 'natural':
+            count_names = ['DDD', 'RRR']
+            if with_shifted: count_names += ['SSS']
+        else:
+            import ast
+
+            def extract_variables(expr):
+                tree = ast.parse(expr, mode='eval')
+                return [node.id for node in ast.walk(tree) if isinstance(node, ast.Name)]
+
+            count_names = extract_variables(estimator)
+            assert set(count_names) == set(kwargs), f'count names in {estimator} are {count_names}, but {list(kwargs)} are provided'
+            count_names = list(kwargs)
+
+        super().__init__([kwargs[count_name] for count_name in count_names], count_names=count_names,
+                         meta=dict(estimator=estimator, **(meta or {})), attrs=attrs)
+
+    def coords(self, *args, **kwargs):
+        """
+        Get coordinate array(s).
+
+        Parameters
+        ----------
+        axis : str or int, optional
+            Name or index of coordinate.
+
+        Returns
+        -------
+        coords : array or dict
+        """
+        return self.get('RRR' if self.estimator in ['landyszalay', 'natural'] else self.count_names[0]).coords(*args, **kwargs)
+
+    def value(self):
+        """
+        Return the correlation function value.
+
+        Returns
+        -------
+        estimator : array
+        """
+        def divide_RRR(corr):
+            RRR = self.get('RRR')
+            if isinstance(RRR, Count3Poles):
+                ellmax = max(max(ell[:2]) for ell in RRR.ells)
+                RRR0 = RRR.get((0, 0, 0)).value()
+                RRRbar = {ell: RRR.get(ell).value() / RRR0 for ell in RRR.ells}
+                matrix = _build_edge_matrix3(ellmax, RRRbar)
+                corr = corr.reshape(matrix.shape[1:])
+                return np.tensordot(matrix, corr, axes=([1, 2], [0, 1]))
+            return corr / RRR
+
+        if self.estimator == 'landyszalay':
+            scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
+            signs = {'DDD': 1., 'DDR': -1., 'DRD': -1., 'RDD': -1., 'DRR': 1., 'RDR': 1., 'RRD': 1., 'RRR': -1.}
+            signs = {name.replace('R', scount_name): sign for name, sign in signs.items()}
+            corr = sum(signs[name] * self.get(name).value() for name in signs)
+            value = divide_RRR(corr)
+        elif self.estimator == 'natural':
+            scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
+            corr = self.get('DDD').value() - self.get(scount_name * 3).value()
+            value = divide_RRR(corr)
+        else:
+            raise NotImplementedError
+        return value
+
+    def project(self, **kwargs):
+        """
+        Project the correlation function onto multipoles.
+
+        Parameters
+        ----------
+        mode : str, optional
+            Projection mode ('poles',). If None, inferred from kwargs.
+        ells : list of int, or a single int, optional
+            Order(s) of Legendre polynomials to project onto (default is ``[(0, 0, 0)]``).
+
+        Returns
+        -------
+        poles : Count3CorrelationPole, Count2CorrelationPoles
+            Correlation function multipoles.
+        """
+        value = self.value()
+        RRR = self.get('RRR')
+        if isinstance(RRR, Count3Poles):
+            coords, edges = RRR.coords(), RRR.edges()
+            edges = {_edges_name(name): edges for name, edges in edges.items()}
+            ells = kwargs.get('ells', None)
+            if ells is None:
+                ells = RRR.ells
+            isscalar = np.ndim(ells) == 0
+            if isscalar: ells = [ells]
+            ills = [RRR.ells.index(tuple(ell)) for ell in ells]
+            RRR0 = RRR.get((0, 0, 0))
+            norm = self.get('DDD').get((0, 0, 0)).values('norm')
+            poles = []
+            for ill, ell in zip(ills, ells):
+                pole = Count3CorrelationPole(**coords, **edges, value=value[ill], RRR0=RRR0.value(),
+                                             norm=norm, ell=ell, attrs=self.attrs, **kwargs)
+                poles.append(pole)
+            poles = Count3CorrelationPoles(poles)
+        else:
+            raise NotImplementedError
+
+    def ravel(self):
+        return self.map(lambda leaf: leaf.ravel())
+
+    def unravel(self):
+        return self.map(lambda leaf: leaf.unravel())
+
+    @classmethod
+    def _sumweight(cls, observables, name, weights=None):
+        # weights to be applied to the leaves (Count3)
+        input_weights = True
+        if weights is None:
+            # First is presumably DDD
+            weights = [observable.get(observable.count_names[0]).norm for observable in observables]
+            input_weights = False
+        if name is None or name in ['normalized_counts']:
+            sumweights = sum(weights)
+            return [weight / sumweights for weight in weights]
+        if name in observables[0]._coords_names:
+            sumweights = sum(weights)
+            axis = list(range(sumweights.ndim))
+            del axis[observables[0]._coords_names.index(name)]
+            axis = tuple(axis)
+            return [weight.sum(axis=axis) / sumweights.sum(axis) for weight in weights]
+        if name in ['norm']:
+            if input_weights:
+                sumweights = sum(weights)
+                return [weight / sumweights for weight in weights]
+            return [1] * len(observables)  # just sum norm
+        raise ValueError(f'{name} weights not implemented')
+
+    @classmethod
+    def mean(cls, *args, **kwargs):
+        raise NotImplementedError('mean not defined')
+
+
+@register_type
+class Count3CorrelationPole(ObservableLeaf):
+    r"""
+    Container for a 3pt correlation function multipole :math:`\zeta`.
+
+    Stores the binned correlation function for a given multipole order :math:`\ell`, including normalization and RRR counts.
+
+    Parameters
+    ----------
+    s : array-like
+        Bin centers for separation :math:`s`.
+    s_edges : array-like
+        Bin edges for separation :math:`s`.
+    value : array-like
+        Correlation function multipole values for each bin.
+    RRR0 : array-like, optional
+        (Isotropic-average of) RRR (random-random-random) triplet counts for each bin (default: ones).
+    norm : array-like, optional
+        Normalization factor (default: ones).
+    ell : int, optional
+        Multipole order :math:`\ell`.
+    attrs : dict, optional
+        Additional attributes.
+    """
+    _name = 'count3_correlation_pole'
+
+    def __init__(self, s=None, s_edges=None, value=None, RR0=None, norm=None, ell=None, attrs=None, **kwargs):
+        if RR0 is None: RR0 = my_ones_like(value)
+        if norm is None: norm = my_ones_like(value)
+        super().__init__(s=s, s_edges=s_edges, value=value, RR0=RR0, norm=norm, coords=['s'], attrs=attrs)
+        if ell is not None:
+            self._meta['ell'] = ell
+
+    def _update(self, **kwargs):
+        super()._update(**kwargs)
+        if 'norm' in kwargs:
+            self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
+
+    def _binweight(self, name=None):
+        # weight, normalized
+        if name == 'RRR0':
+            return False, False
+        return self.RRR0, True
+
+    @classmethod
+    def _sumweight(cls, observables, name=None, weights=None):
+        input_weights = True
+        if weights is None:
+            weights = [observable.norm for observable in observables]
+            input_weights = False
+        if name is None or name in ['value', 'RRR0']:
+            sumweights = sum(weights)
+            return [weight / sumweights for weight in weights]
+        if name in observables[0]._coords_names:
+            sumweights = sum(weights)
+            axis = list(range(sumweights.ndim))
+            del axis[observables[0]._coords_names.index(name)]
+            axis = tuple(axis)
+            return [weight.sum(axis=axis) / sumweights.sum(axis) for weight in weights]
+        if name in ['norm']:
+            if input_weights:
+                sumweights = sum(weights)
+                return [weight / sumweights for weight in weights]
+            return [1] * len(observables)  # just sum norm
+        raise ValueError(f'{name} weights not implemented')
+
+    def unravel(self):
+        """Unravel the coordinate axis 's' into 's1', 's2' (and 's3')."""
+        return Count3.unravel(self)
+
+    def ravel(self):
+        """Ravel the coordinate axes into a single axis 's'."""
+        return Count3.ravel(self)
+
+    def _plabel(self, name):
+        if name == 's':
+            return r'$s_1, s_2$ [$\mathrm{Mpc}/h$]'
+        if name in ['s1', 's2', 's3']:
+            return rf'$s_{{{name[-1]}}}$ [$\mathrm{{Mpc}}/h$]'
+        if name == 'value':
+            return r'$\zeta_{\ell_1, \ell_2, \ell_3}(s_1, s_2)$'
+        return None
+
+    @plotter
+    def plot(self, fig=None, **kwargs):
+        r"""
+        Plot a 3pcf multipole.
+
+        Parameters
+        ----------
+        fig : matplotlib.figure.Figure, default=None
+            Optionally, a figure with at least 1 axis.
+        fn : str, Path, default=None
+            Optionally, path where to save figure.
+            If not provided, figure is not saved.
+        kw_save : dict, default=None
+            Optionally, arguments for :meth:`matplotlib.figure.Figure.savefig`.
+        show : bool, default=False
+            If ``True``, show figure.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            Figure object.
+        """
+        from matplotlib import pyplot as plt
+        if fig is None:
+            fig, ax = plt.subplots()
+        else:
+            ax = fig.axes[0]
+        if self.is_raveled:
+            coord = self.coords(0)
+            ax.plot(np.arange(len(coord)), coord.prod(axis=-1)**2 * self.value(), **kwargs)
+            ax.set_xlabel('bin index')
+            ax.set_ylabel(r'$s_1 s_2 \zeta}(s_1, s_2)$ [$(\mathrm{Mpc}/h)^{4}$]')
+        else:
+            coords = list(self.coords().values())
+            if len(coords) > 2:
+                raise NotImplementedError('Cannot plot 3D pole!')
+            value = prod(np.meshgrid(*coords, indexing='ij', sparse=True))**2 * self.value()
+            ax.pcolormesh(*coords, value.T, **kwargs)
+            ax.set_xlabel(self._plabel(self._coords_names[0]))
+            ax.set_ylabel(self._plabel(self._coords_names[1]))
+        return fig
+
+
+@register_type
+class Count3CorrelationPoles(ObservableTree):
+    r"""
+    Container for multiple correlation function multipoles :math:`\zeta`.
+
+    Stores a collection of `Count3CorrelationPole` objects for different multipole orders :math:`\ell`.
+
+    Parameters
+    ----------
+    poles : list of Count3CorrelationPole
+        List of correlation function multipole objects.
+    ells : list of int, optional
+        Multipole orders :math:`\ell` for each pole (default: inferred from `poles`).
+    attrs : dict, optional
+        Additional attributes.
+    """
+    _name = 'count3_correlation_poles'
+
+    def __init__(self, poles, ells=None, attrs=None):
+        """Initialize correlation function multipoles."""
+        if ells is None: ells = [pole.ell for pole in poles]
+        super().__init__(poles, ells=ells, attrs=attrs)
+
+    def ravel(self):
+        return self.map(lambda leaf: leaf.ravel())
+
+    def unravel(self):
+        return self.map(lambda leaf: leaf.unravel())
+
+    @plotter
+    def plot(self, fig=None):
+        r"""
+        Plot the correlation function multipoles.
+
+        Parameters
+        ----------
+        fig : matplotlib.figure.Figure, default=None
+            Optionally, a figure with at least 1 axis.
+        fn : str, Path, default=None
+            Optionally, path where to save figure.
+            If not provided, figure is not saved.
+        kw_save : dict, default=None
+            Optionally, arguments for :meth:`matplotlib.figure.Figure.savefig`.
+        show : bool, default=False
+            If ``True``, show figure.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            Figure object.
+        """
+        from matplotlib import pyplot as plt
+        if fig is None:
+            fig, ax = plt.subplots()
+        else:
+            ax = fig.axes[0]
+        for ell in self.ells:
+            pole = self.get(ell)
+            pole.plot(fig=ax, label=rf'$\ell = {ell:d}$')
+        ax.legend(frameon=False)
+        return fig
+
+
+from functools import lru_cache
+
+
+def _build_edge_matrix2(ells, RRbar, ellsin=None):
+    r"""
+    Build the 2PCF edge-correction matrix.
+
+    Parameters
+    ----------
+    ells : array-like
+        Output multipoles, e.g. [0, 2, 4].
+    RRbar : dict
+        Normalized random-pair multipoles, keyed by k: RRbar[k] = RR_k / RR_0.
+        Must include k=0 with value 1, or it will be added.
+    ellsin : array-like, default=None
+        Input xi multipoles. If None, use ``ells``.
+
+    Returns
+    -------
+    M : ndarray
+        Matrix such that :math:`NN_{\ell} / RR_0 = \sum_{\ell'} M_{\ell,\ell'} \xi_{\ell'}`.
+
+        If ``ellsin == ells`` and ``RRbar = {0: 1}``, this is the identity.
+    """
+    import numpy as np
+    from functools import lru_cache
+    from sympy.physics.wigner import wigner_3j
+
+    @lru_cache(None)
+    def legendre_product_coeff(l, lp, k):
+        """Coefficient C(l, lp, k) in P_l P_lp = sum_k C(l, lp, k) P_k."""
+        if k < abs(l - lp) or k > l + lp:
+            return 0.0
+        if (l + lp + k) % 2:
+            return 0.0
+        return (2 * k + 1) * float(wigner_3j(l, lp, k, 0, 0, 0))**2
+
+    ells = list(ells)
+    ellsin = ells if ellsin is None else list(ellsin)
+
+    f = dict(RRbar)
+    f.setdefault(0, 1.0)
+
+    M = None
+
+    for i, ellout in enumerate(ells):
+        for j, ellin in enumerate(ellsin):
+            for k, fk in f.items():
+                if M is None:
+                    M = np.zeros((len(ells), len(ellsin)) + fk.shape, dtype=float)
+                M[i, j] += 1. * (ellout == ellin) + fk * legendre_product_coeff(ellout, ellin, k)
+
+    return M
+
+
+def _build_edge_matrix3(ellmax, RRRbar):
+    r"""
+    Build edge-correction matrix M following Eq. 29 of https://arxiv.org/pdf/1709.10150.
+
+    Parameters
+    ----------
+    states : list[(int,int,int)]
+        Basis states, e.g. [(l, lp, |m|), ...].
+        Same list is used for rows (j,jp,|s|) and columns (l,lp,|m|).
+    RRRbar : dict
+        Random edge factors RRRbar[(k, kp, abs_p)] = Rbar^{|p|}_{kk'} / Rbar^0_{00}.
+        Should include all truncated k, k' modes desired. The (0, 0, 0) term is skipped.
+
+    Returns
+    -------
+    M : ndarray, shape (nstate, nstate)
+        Edge correction matrix in :math:`\bar{N} / R_{000} = (I + M) \bar{\zeta}`.
+    """
+    def get_ells(ellmax):
+        """ll'm used for ζbar^{|m|}_{ll'} or Nbar^{|s|}_{jj'}."""
+        out = []
+        for ell in range(ellmax + 1):
+            for ellp in range(ellmax + 1):
+                for m in range(min(ell, ellp) + 1):
+                    out.append((ell, ellp, m))
+        return out
+
+    @lru_cache(None)
+    def G(l1, l2, l3, m1, m2, m3):
+        """Real Gaunt integral ∫Y_l1m1 Y_l2m2 Y_l3m3 dΩ."""
+        from sympy.physics.wigner import gaunt
+        return float(gaunt(l1, l2, l3, m1, m2, m3))
+
+    ells = get_ells(ellmax)
+    M = None
+
+    for a, (j, jp, s) in enumerate(ells):          # row: Nbar^{|s|}_{jj'}
+        for b, (l, lp, m) in enumerate(ells):      # col: zetabar^{|m|}_{ll'}
+            p = s - m
+            ap = abs(p)
+            val = 0.0
+            for (k, kp, p_abs), f in RRRbar.items():
+                if p_abs != ap:
+                    continue
+                if k == 0 and kp == 0 and ap == 0:
+                    continue
+                val += f * G(l,  k,  j,  m,  p, -s) * G(lp, kp, jp, -m, -p,  s)
+            if M is None:
+                val = np.asarray(val)
+                M = np.zeros((len(ells), len(ells)) + val.shape, dtype=float)
+            M[a, b] = 1. * (a == b) + val
+
+    return M

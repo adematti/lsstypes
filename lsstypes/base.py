@@ -2681,7 +2681,7 @@ class LeafLikeObservableTree(ObservableTree):
             _meanweight = meanweight
             def meanweight(_, name):
                 # pass (list of) LeafLikeObservableTree as argument
-                return _meanweight(observables, name, weights=weights)
+                return _meanweight(observables, name)
         return cls._average(observables, weights=meanweight)
 
 
