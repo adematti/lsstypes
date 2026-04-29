@@ -1012,7 +1012,7 @@ def _nan_to_zero(array):
 @register_type
 class Count2Jackknife(LeafLikeObservableTree):
     """
-    Container for jackknife two-point pair counts.
+    Container for jackknife pair counts.
 
     Stores pair counts for all jackknife realizations, including cross-pairs, and provides methods for jackknife corrections and covariance estimation.
 
@@ -1126,7 +1126,7 @@ class Count2Jackknife(LeafLikeObservableTree):
         Returns
         -------
         counts : Count2
-            Two-point counts for realization ``ii``.
+            Pair counts for realization ``ii``.
         """
         alpha = 1.
         if isinstance(correction, str):
@@ -1184,6 +1184,9 @@ class Count2Jackknife(LeafLikeObservableTree):
             mean = realizations[0].mean(realizations)
             return CovarianceMatrix(observable=mean, value=cov)
         return cov
+
+
+Count2Like = Count2 | Count2Jackknife
 
 
 def _get_project_mode(estimator, mode=None, **kwargs):
@@ -1277,6 +1280,109 @@ class Count2Poles(LeafLikeObservableTree):
 
 
 @register_type
+class Count2PoleJackknife(Count2Jackknife):
+
+    _name = 'count2_pole_jackknife'
+
+    def __init__(self, ii_counts, ij_counts, ji_counts, realizations=None, attrs=None):
+        super().__init__(ii_counts, ij_counts, ji_counts, realizations=realizations, attrs=attrs)
+        for count in self.get(cross='ii'): break
+        for name in ['ell']:
+            if name in count._meta:
+                self._meta[name] = count._meta[name]
+
+
+@register_type
+class Count2PolesJackknife(LeafLikeObservableTree):
+    """
+    Container for jackknife multiplole pair counts.
+    """
+    _name = 'count2_poles_jackknife'
+
+    def __init__(self, ii_counts, ij_counts, ji_counts, realizations=None, attrs=None):
+        """Initialize multipoles."""
+        if realizations is None:
+            realizations = list(ii_counts)
+        assert set(ji_counts) == set(ij_counts) == set(ii_counts)
+        ells = ii_counts[realizations[0]].ells
+        poles = []
+        for ell in ells:
+            _ii_counts = {real: ii_counts[real].get(ell) for real in realizations}
+            _ij_counts = {real: ij_counts[real].get(ell) for real in realizations}
+            _ji_counts = {real: ji_counts[real].get(ell) for real in realizations}
+            poles.append(Count2PoleJackknife(_ii_counts, _ij_counts, _ji_counts, realizations=realizations, attrs=attrs))
+        super().__init__(poles, ells=ells, attrs=attrs)
+
+    def coords(self, *args, **kwargs):
+        """
+        Get coordinate array(s).
+
+        Parameters
+        ----------
+        axis : str or int, optional
+            Name or index of coordinate.
+
+        Returns
+        -------
+        coords : array or dict
+        """
+        return self.get(0).coords(*args, **kwargs)
+
+    def value(self, return_type='nparray', **kwargs):
+        """
+        Return the pair count value.
+
+        Parameters
+        ----------
+        return_type : str, None, optional
+            If 'nparray', return a numpy array.
+            If ``None``, return a :class:`Count2Poles` instance.
+
+        Returns
+        -------
+        estimator : array, Count2Poles
+            Pair counts.
+        """
+        count = Count2Poles([pole.value(return_type=None) for pole in self._branches], ells=self.ells, attrs=self.attrs)
+        if return_type is None:
+            return count
+        return count.value(**kwargs)
+
+    @property
+    def realizations(self):
+        return self._branches[0].realizations
+
+    @property
+    def nrealizations(self):
+        """Number of realizations."""
+        return len(self.realizations)
+
+    def realization(self, ii, correction='mohammad21'):
+        poles = [pole.realization(ii, correction=correction) for pole in self._branches]
+        return Count2Poles(poles, ells=self.ells, attrs=self.attrs)
+
+    def cov(self, return_type='nparray', **kwargs):
+        """
+        Return jackknife covariance (of flattened counts).
+
+        Parameters
+        ----------
+        kwargs : dict
+            Optional arguments for :meth:`realization`.
+
+        Returns
+        -------
+        covariance : array
+            Covariance matrix.
+        """
+        return Count2Jackknife.cov(return_type=return_type, **kwargs)
+
+
+Count2PoleLike = Count2Pole | Count2PoleJackknife
+Count2PolesLike = Count2Poles | Count2PolesJackknife
+
+
+@register_type
 class Count2Correlation(LeafLikeObservableTree):
     """
     Correlation function estimator for two-point statistics.
@@ -1345,7 +1451,7 @@ class Count2Correlation(LeafLikeObservableTree):
         """
         def divide_RR(corr):
             RR = self.get('RR')
-            if isinstance(RR, Count2Poles):
+            if isinstance(RR, Count2PolesLike):
                 RR0 = RR.get(0).value()
                 RRbar = {ell: RR.get(ell).value() / RR0 for ell in RR.ells}
                 matrix = _build_edge_matrix2(RR.ells, RRbar)
@@ -1391,9 +1497,6 @@ class Count2Correlation(LeafLikeObservableTree):
             - 'RR': :class:`Count2` instance with finer `s`-binning, to override ``estimator.get('RR')``
             - 'resolution' (default=1): number of evaluation points per RR-bin.
             If provided, also returns the window matrix for convolving theory.
-        kw_covariance : dict, optional
-            Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
-            If provided, also returns the covariance matrix of the multipoles/wedges/projected correlation function.
 
         Returns
         -------
@@ -1401,31 +1504,28 @@ class Count2Correlation(LeafLikeObservableTree):
             Correlation function multipoles or wedges or projected correlation function.
         window : WindowMatrix, optional
             Window matrix for convolving theory (returned if ``kw_window`` is provided).
-        covariance : CovarianceMatrix, optional
-            Covariance matrix of the multipoles (returned if ``kw_covariance`` is provided).
         """
         mode, kwargs = _get_project_mode(self, mode=mode, **kwargs)
         if mode == 'poles':
-            if isinstance(self.get('RR'), Count2Poles):
-                RR = self.get('RR')
-                if isinstance(RR, Count2Poles):
-                    coords, edges = RR.coords(), RR.edges()
-                    edges = {_edges_name(name): edges for name, edges in edges.items()}
-                    ells = kwargs.get('ells', None)
-                    if ells is None:
-                        ells = RR.ells
-                    isscalar = np.ndim(ells) == 0
-                    if isscalar: ells = [ells]
-                    ills = [RR.ells.index(ell) for ell in ells]
-                    RRR0 = RR.get(0)
-                    norm = self.get('DD').get(0).values('norm')
-                    value = self.value()
-                    poles = []
-                    for ill, ell in zip(ills, ells):
-                        pole = Count2CorrelationPole(**coords, **edges, value=value[ill], RRR0=RRR0.value(),
+            RR = self.get('RR')
+            if isinstance(RR, Count2PolesLike):
+                coords, edges = RR.coords(), RR.edges()
+                edges = {_edges_name(name): edges for name, edges in edges.items()}
+                ells = kwargs.get('ells', None)
+                if ells is None:
+                    ells = RR.ells
+                isscalar = np.ndim(ells) == 0
+                if isscalar: ells = [ells]
+                ills = [RR.ells.index(ell) for ell in ells]
+                RR0 = RR.get(0)
+                norm = self.get('DD').get(0).values('norm')
+                value = self.value()
+                poles = []
+                for ill, ell in zip(ills, ells):
+                    pole = Count2CorrelationPole(**coords, **edges, value=value[ill], RR0=RR0.value(),
                                                     norm=norm, ell=ell, attrs=self.attrs, **kwargs)
-                        poles.append(pole)
-                    return Count2CorrelationPoles(poles)
+                    poles.append(pole)
+                return Count2CorrelationPoles(poles)
             return _project_to_poles(self, **kwargs)
         if mode == 'wedges':
             return _project_to_wedges(self, **kwargs)
@@ -1439,7 +1539,7 @@ class Count2Correlation(LeafLikeObservableTree):
 
         def get_count(observable):
             count = observable.get(observable.count_names[0])
-            if isinstance(count, Count2Poles):
+            if isinstance(count, Count2PolesLike):
                 return count.get(0)
             return count
 
@@ -1539,6 +1639,54 @@ class Count2JackknifeCorrelation(Count2Correlation):
             kw = {name: self.get(name).value(return_type=None) for name in self.count_names}
             return Count2Correlation(**kw, estimator=self.estimator, attrs=self.attrs)
         return value
+
+    def project(self, mode=None, **kwargs):
+        """
+        Project the correlation function onto multipoles, wedges, or bins in radial separation.
+
+        Parameters
+        ----------
+        mode : str, optional
+            Projection mode ('poles', 'wedges', 'wp'). If None, inferred from kwargs.
+        ells : list of int, or a single int, optional
+            Order(s) of Legendre polynomials to project onto (default is ``[0, 2, 4]``).
+        wedges : list of pairs, or a single pair, optional
+            :math:`mu`-edges (min, max) of each wedge, e.g. the default value [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)],
+            or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5).
+        ignore_nan : bool, optional
+            If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
+        kw_window : dict, optional
+            Optional arguments for window matrix calculation:
+            - 'RR': :class:`Count2` instance with finer `s`-binning, to override ``estimator.get('RR')``
+            - 'resolution' (default=1): number of evaluation points per RR-bin.
+            If provided, also returns the window matrix for convolving theory.
+        kw_covariance : dict, optional
+            Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
+            If provided, also returns the covariance matrix of the multipoles/wedges/projected correlation function.
+
+        Returns
+        -------
+        poles_wedges_or_wp : Count2CorrelationPole, Count2CorrelationPoles, Count2CorrelationWedge, Count2CorrelationWedges, Count2CorrelationWp
+            Correlation function multipoles or wedges or projected correlation function.
+        covariance : CovarianceMatrix, optional
+            Covariance matrix of the multipoles (returned if ``kw_covariance`` is provided).
+        window : WindowMatrix, optional
+            Window matrix for convolving theory (returned if ``kw_window`` is provided).
+        """
+        correlation = self.value(return_type=None)
+        kw_covariance = kwargs.pop('kw_covariance', None)
+        mean_and_window = correlation.project(mode=mode, **kwargs)
+        if kw_covariance is None:
+            return mean_and_window
+        kwargs.pop('kw_window', None)
+        realizations = [self.realization(ii, **kw_covariance).project(mode=mode, **kwargs) for ii in self.realizations]
+        cov = (len(realizations) - 1) * np.cov([realization.value().ravel() for realization in realizations], rowvar=False, ddof=0)
+        cov = np.atleast_2d(cov)
+        mean = realizations[0].mean(realizations)
+        cov = CovarianceMatrix(observable=mean, value=cov)
+        if not isinstance(mean_and_window, tuple):
+            mean_and_window = (mean_and_window,)
+        return mean_and_window[:1] + (cov,) + mean_and_window[1:]
 
     def cov(self, return_type='nparray', **kwargs):
         """
@@ -1755,7 +1903,7 @@ def compute_RR2_window(RR, edges=None, ells=(0, 2, 4), ellsin=(0, 2, 4), kind='R
     return WindowMatrix(value=window, observable=observable, theory=theory)
 
 
-def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw_covariance=None):
+def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None):
     r"""
     Project a two-dimensional correlation function :math:`\xi(s, \mu)` onto Legendre polynomial multipoles.
 
@@ -1776,24 +1924,14 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
         - 'RR': :class:`Count2` instance with finer `s`-binning, to override ``estimator.get('RR')``
         - 'resolution' (default=1): number of evaluation points per RR-bin.
         If provided, also returns the window matrix for convolving theory.
-    kw_covariance : dict, optional
-        Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
-        If provided, also returns the covariance matrix of the multipoles.
 
     Returns
     -------
     poles : Count2CorrelationPole or Count2CorrelationPoles
         Correlation function multipoles.
-    covariance : CovarianceMatrix, optional
-        Covariance matrix of the multipoles (returned if ``kw_covariance`` is provided).
-    window : WindowMatrix, optional
-        Window matrix for convolving theory (returned if ``kw_window`` is provided).
-
     """
     return_window = kw_window is not None
     kw_window = dict(kw_window or {})
-    return_covariance = kw_covariance is not None
-    kw_covariance = dict(kw_covariance or {})
     from scipy import special
     assert list(estimator.coords()) == ['s', 'mu']
     if ells is None: ells = [0, 2, 4]
@@ -1833,22 +1971,16 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
         values = Count2CorrelationPoles(values, attrs=estimator.attrs)
 
     toret = [values]
-    if return_covariance:
-        realizations = [_project_to_poles(estimator.realization(ii, **kw_covariance), ells=ells[0] if isscalar else ells, ignore_nan=ignore_nan) for ii in estimator.realizations]
-        cov = (len(realizations) - 1) * np.cov([realization.value().ravel() for realization in realizations], rowvar=False, ddof=0)
-        cov = np.atleast_2d(cov)
-        mean = realizations[0].mean(realizations)
-        toret.append(CovarianceMatrix(observable=mean, value=cov))
     if return_window:
         RR = kw_window.get('RR', None)
         if RR is None: RR = estimator.get('RR')
         window = compute_RR2_window(RR, edges=sedges, ells=kw_window.get('ells', (0, 2, 4)), resolution=kw_window.get('resolution', 1))
         window = window.clone(observable=values.clone(value=np.zeros_like(values.value())))
         toret.append(window)
-    return toret if len(toret) > 1 else toret[0]
+    return tuple(toret) if len(toret) > 1 else toret[0]
 
 
-def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=None):
+def _project_to_wedges(estimator, wedges=None, ignore_nan=False):
     r"""
     Project a two-dimensional correlation function :math:`\xi(s, \mu)` onto wedges (integrating over :math:`\mu`).
 
@@ -1861,19 +1993,12 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
         or :math:`mu`-edges (min, max) of a single wedge, e.g. (-0.5, 0.5).
     ignore_nan : bool, optional
         If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
-    kw_covariance : dict, optional
-        Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
-        If provided, also returns the covariance matrix of the wedges.
 
     Returns
     -------
     wedges : Count2CorrelationWedge or Count2CorrelationWedges
         Correlation function wedges.
-    covariance : CovarianceMatrix, optional
-        Covariance matrix of the wedges (returned if ``kw_covariance`` is provided).
     """
-    return_covariance = kw_covariance is not None
-    kw_covariance = dict(kw_covariance or {})
     assert list(estimator.coords()) == ['s', 'mu']
     if wedges is None: wedges = [(-1., -2. / 3), (-2. / 3, -1. / 3), (-1. / 3, 0.), (0., 1. / 3), (1. / 3, 2. / 3), (2. / 3, 1.)]
     assert np.ndim(wedges) in (1, 2) and np.shape(wedges)[-1] == 2, 'wedges should be a list of (min, max) pairs or a single (min, max) pair'
@@ -1908,17 +2033,10 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
         values = values[0]
     else:
         values = Count2CorrelationWedges(values)
-    toret = [values]
-    if return_covariance:
-        realizations = [_project_to_wedges(estimator.realization(ii, **kw_covariance), wedges=wedges[0] if isscalar else wedges, ignore_nan=ignore_nan) for ii in estimator.realizations]
-        cov = (len(realizations) - 1) * np.cov([realization.value().ravel() for realization in realizations], rowvar=False, ddof=0)
-        cov = np.atleast_2d(cov)
-        mean = realizations[0].mean(realizations)
-        toret.append(CovarianceMatrix(observable=mean, value=cov))
-    return toret if len(toret) > 1 else toret[0]
+    return values
 
 
-def _project_to_wp(estimator, ignore_nan=False, kw_covariance=None):
+def _project_to_wp(estimator, ignore_nan=False):
     r"""
     Integrate :math:`(r_p, \pi)` correlation function over :math:`\pi` to obtain :math:`w_p(r_p)`.
 
@@ -1928,19 +2046,12 @@ def _project_to_wp(estimator, ignore_nan=False, kw_covariance=None):
         Estimator for the :math:`(r_p, \pi)` correlation function.
     ignore_nan : bool, optional
         If ``True``, ignore NaN values in the correlation function during integration (default is ``False``).
-    kw_covariance : dict, optional
-        Optional arguments for jackknife covariance estimation (if input :class:`Count2JackknifeCorrelation`).
-        If provided, also returns the covariance matrix of the multipoles.
 
     Returns
     -------
     wedges : Count2CorrelationWp
         Projected correlation function.
-    covariance : CovarianceMatrix, optional
-        Covariance matrix of the projected correlation function (returned if ``kw_covariance`` is provided).
     """
-    return_covariance = kw_covariance is not None
-    kw_covariance = dict(kw_covariance or {})
     assert list(estimator.coords()) == ['rp', 'pi']
     piedges = estimator.edges('pi')
     dpi = np.diff(piedges, axis=-1)[..., 0]
@@ -1958,16 +2069,7 @@ def _project_to_wp(estimator, ignore_nan=False, kw_covariance=None):
         value = np.sum(estimator_value * dpi, axis=-1)
         RR0 = np.sum(estimator_RR, axis=-1)
         norm = np.sum(estimator_norm, axis=-1)
-    toret = []
-    value = Count2CorrelationWp(value=value, rp=estimator.coords('rp'), rp_edges=estimator.edges('rp'), pi_edges=estimator.edges('pi')[[0, -1], [0, 1]], RR0=RR0, norm=norm, attrs=estimator.attrs)
-    toret.append(value)
-    if return_covariance:
-        realizations = [_project_to_wp(estimator.realization(ii, **kw_covariance), ignore_nan=ignore_nan) for ii in estimator.realizations]
-        cov = (len(realizations) - 1) * np.cov([realization.value().ravel() for realization in realizations], rowvar=False, ddof=0)
-        cov = np.atleast_2d(cov)
-        mean = realizations[0].mean(realizations)
-        toret.append(CovarianceMatrix(observable=mean, value=cov))
-    return toret if len(toret) > 1 else toret[0]
+    return Count2CorrelationWp(value=value, rp=estimator.coords('rp'), rp_edges=estimator.edges('rp'), pi_edges=estimator.edges('pi')[[0, -1], [0, 1]], RR0=RR0, norm=norm, attrs=estimator.attrs)
 
 
 @register_type
