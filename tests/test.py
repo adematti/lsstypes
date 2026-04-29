@@ -740,6 +740,8 @@ def test_types(show=False):
     covariance.plot(show=show)
     window.plot(show=show)
     assert window.shape[1] == 2 * window.shape[0]
+    correlation_no_jackknife = correlation.value(return_type=None)
+    assert type(correlation_no_jackknife.get('DD')) is Count2
 
     value, covariance = correlation.project(wedges=[(-1., -2. / 3.), (1. / 2., 2. / 3.)], kw_covariance=dict())
     value.plot(show=show)
@@ -1263,8 +1265,132 @@ def test_io_speed():
     print(f'Readout time npy: {(time.time() - t0):.5f} s')
 
 
+
+
+
+
+
+
+
+def test_types(show=False):
+
+    from lsstypes import Count2Pole, Count2Poles, Count2CorrelationPoles
+
+    test_dir = Path('_tests')
+
+    def get_count2poles(seed=42):
+        ells = [0, 2, 4]
+
+        def get_count2pole(ell):
+            rng = np.random.RandomState(seed=seed + int(ell))
+            coords = ['s']
+            edges = [np.linspace(0., 200., 201)]
+            edges = [np.column_stack([edge[:-1], edge[1:]]) for edge in edges]
+            coords_values = [np.mean(edge, axis=-1) for edge in edges]
+            counts = 1. + rng.uniform(size=tuple(v.size for v in coords_values))
+            return Count2Pole(counts=counts, norm=np.ones_like(counts), **{coord: value for coord, value in zip(coords, coords_values)},
+                        **{f'{coord}_edges': value for coord, value in zip(coords, edges)}, coords=coords, ell=ell, attrs=dict(los='x'))
+        return Count2Poles([get_count2pole(ell) for ell in ells])
+
+    def get_correlation2poles(seed=42):
+        counts = {label: get_count2poles(seed=seed + i) for i, label in enumerate(['DD', 'DR', 'RD', 'RR'])}
+        return Count2Correlation(**counts)
+
+    def get_correlation2poles_jackknife(seed=42):
+        def get_count_jk(seed=42):
+            realizations = list(range(24))
+            ii_counts = {ireal: get_count2poles(seed=seed + ireal) for ireal in realizations}
+            ij_counts = {ireal: get_count2poles(seed=seed + ireal + 1) for ireal in realizations}
+            ji_counts = {ireal: get_count2poles(seed=seed + ireal + 2) for ireal in realizations}
+            return Count2Jackknife(ii_counts, ij_counts, ji_counts)
+
+        counts = {label: get_count_jk(seed=seed + i) for i, label in enumerate(['DD', 'DR', 'RD', 'RR'])}
+        return Count2JackknifeCorrelation(**counts)
+
+    correlation = get_correlation2poles()
+    #assert isinstance(correlation.project(), Count2CorrelationPoles)
+    correlation2 = correlation + correlation
+    assert np.allclose(correlation2.get(count_names='DD', ells=2).values('counts'), 2 * correlation.get(count_names='DD', ells=2).values('counts'))
+
+    from lsstypes import Count3Pole, Count3Poles, Count3Correlation, Count3CorrelationPoles
+
+    def get_ells(ellmax=2):
+        return [
+            (ell, ellp, m)
+            for ell in range(ellmax + 1)
+            for ellp in range(ellmax + 1)
+            for m in range(min(ell, ellp) + 1)
+        ]
+
+    def get_count3poles(seed=42, ellmax=2):
+        ells = get_ells(ellmax)
+
+        def get_count3pole(ell):
+            rng = np.random.RandomState(seed=seed + 100 * ell[0] + 10 * ell[1] + ell[2])
+
+            coords = ['s1', 's2']
+            edges = [
+                np.linspace(0., 200., 21),
+                np.linspace(0., 200., 21),
+            ]
+            edges = [np.column_stack([edge[:-1], edge[1:]]) for edge in edges]
+            coords_values = [np.mean(edge, axis=-1) for edge in edges]
+
+            shape = tuple(v.size for v in coords_values)
+            counts = 1. + rng.uniform(size=shape)
+            norm = np.ones_like(counts)
+
+            return Count3Pole(counts=counts, norm=norm, s1=coords_values[0], s2=coords_values[1],
+                              s1_edges=edges[0], s2_edges=edges[1], coords=coords, ell=ell, attrs=dict(los='x'))
+
+        return Count3Poles([get_count3pole(ell) for ell in ells])
+
+    def get_correlation3poles(seed=42):
+        labels = ['DDD', 'DDR', 'DRD', 'RDD', 'DRR', 'RDR', 'RRD', 'RRR']
+        counts = {label: get_count3poles(seed=seed + i) for i, label in enumerate(labels)}
+        return Count3Correlation(**counts)
+
+    correlation = get_correlation3poles()
+
+    # basic tree arithmetic / label propagation
+    correlation2 = correlation + correlation
+    assert np.allclose(
+        correlation2.get(count_names='DDD', ells=(1, 1, 0)).values('counts'),
+        2. * correlation.get(count_names='DDD', ells=(1, 1, 0)).values('counts'),
+    )
+
+    # value should be flattened over multipoles, then spatial bins
+    value = correlation.value()
+    assert value.shape[0] == len(correlation.get('RRR').ells)
+    assert value.shape[1:] == correlation.get('RRR').get((0, 0, 0)).value().shape
+
+    # project should return Count3CorrelationPoles
+    poles = correlation.project()
+    assert isinstance(poles, Count3CorrelationPoles)
+    assert poles.ells == correlation.get('RRR').ells
+
+    # check one projected pole has expected coords and shape
+    pole = poles.get((1, 1, 0))
+    assert np.allclose(pole.coords('s1'), correlation.get('RRR').get((1, 1, 0)).coords('s1'))
+    assert np.allclose(pole.coords('s2'), correlation.get('RRR').get((1, 1, 0)).coords('s2'))
+    assert pole.value().shape == correlation.get('RRR').get((1, 1, 0)).value().shape
+
+    # ravel / unravel round-trip on Count3Poles
+    raveled = correlation.get('DDD').ravel()
+    assert all(leaf.is_raveled for leaf in raveled)
+    unraveled = raveled.unravel()
+    assert np.allclose(
+        unraveled.get((1, 1, 0)).values('counts'),
+        correlation.get('DDD').get((1, 1, 0)).values('counts'),
+    )
+
+    poles.plot(show=show)
+
+
 if __name__ == '__main__':
 
+    test_types()
+    exit()
     test_utils()
     test_tree()
     test_types()

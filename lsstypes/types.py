@@ -86,7 +86,7 @@ class Mesh2SpectrumPole(ObservableLeaf):
     def _sumweight(cls, observables, name=None, weights=None):
         input_weights = True
         if weights is None:
-            weights = [observable.norm for observable in observables]
+            weights = [observable.values('norm') for observable in observables]
             input_weights = False
         if name is None or name in ['value']:
             sumweights = sum(weights)
@@ -966,7 +966,7 @@ class Count2(ObservableLeaf):
     def _sumweight(cls, observables, name, weights=None):
         input_weights = True
         if weights is None:
-            weights = [observable.norm for observable in observables]
+            weights = [observable.values('norm') for observable in observables]
             input_weights = False
         if name is None or name in ['normalized_counts']:
             sumweights = sum(weights)
@@ -1055,7 +1055,7 @@ class Count2Jackknife(LeafLikeObservableTree):
         Returns
         -------
         estimator : array, Count2
-            Two-point counts.
+            Pair counts.
         """
         value = Count2.value(self)
         if return_type is None:
@@ -1065,11 +1065,11 @@ class Count2Jackknife(LeafLikeObservableTree):
         return value
 
     def values(self, *args, **kwargs):
-        """Two-point count values: 'normalized_counts' and 'norm'."""
+        """Pair count values: 'normalized_counts' and 'norm'."""
         return Count2.values(self, *args, **kwargs)
 
     def coords(self, *args, **kwargs):
-        """Two-point count coordinates."""
+        """Pair count coordinates."""
         return Count2.coords(self, *args, **kwargs)
 
     def __getattr__(self, name):
@@ -1231,11 +1231,11 @@ class Count2Pole(Count2):
     def __init__(self, counts=None, norm=None, attrs=None, ell=None, **kwargs):
         super().__init__(counts=counts, norm=norm, attrs=attrs, **kwargs)
         if ell is not None:
-            self._meta['ell'] = tuple(ell)
+            self._meta['ell'] = int(ell)
 
 
 @register_type
-class Count2Poles(ObservableTree):
+class Count2Poles(LeafLikeObservableTree):
     r"""
     Container for multiple pair poles :math:`C_{\ell}`.
 
@@ -1257,11 +1257,23 @@ class Count2Poles(ObservableTree):
         if ells is None: ells = [pole.ell for pole in poles]
         super().__init__(poles, ells=ells, attrs=attrs)
 
-    def ravel(self):
-        return self.map(lambda leaf: leaf.ravel())
+    def coords(self, *args, **kwargs):
+        """
+        Get coordinate array(s).
 
-    def unravel(self):
-        return self.map(lambda leaf: leaf.unravel())
+        Parameters
+        ----------
+        axis : str or int, optional
+            Name or index of coordinate.
+
+        Returns
+        -------
+        coords : array or dict
+        """
+        return self.get(0).coords(*args, **kwargs)
+
+    def value(self, concatenate=True):
+        return ObservableTree.value(self, concatenate=concatenate)
 
 
 @register_type
@@ -1338,8 +1350,11 @@ class Count2Correlation(LeafLikeObservableTree):
                 RRbar = {ell: RR.get(ell).value() / RR0 for ell in RR.ells}
                 matrix = _build_edge_matrix2(RR.ells, RRbar)
                 corr = corr.reshape(matrix.shape[1:])
-                return np.tensordot(matrix, corr, axes=([1, 2], [0, 1]))
-            return corr / RR
+                matrix = np.moveaxis(matrix, (0, 1), (-2, -1))
+                rhs = np.moveaxis(corr, 0, -1)
+                toret = np.linalg.solve(matrix, rhs[..., None])[..., 0]
+                return np.moveaxis(toret, -1, 0)
+            return corr / RR.value()
 
         if self.estimator == 'landyszalay':
             scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
@@ -1404,12 +1419,13 @@ class Count2Correlation(LeafLikeObservableTree):
                     ills = [RR.ells.index(ell) for ell in ells]
                     RRR0 = RR.get(0)
                     norm = self.get('DD').get(0).values('norm')
+                    value = self.value()
                     poles = []
                     for ill, ell in zip(ills, ells):
                         pole = Count2CorrelationPole(**coords, **edges, value=value[ill], RRR0=RRR0.value(),
                                                     norm=norm, ell=ell, attrs=self.attrs, **kwargs)
                         poles.append(pole)
-                    poles = Count2CorrelationPoles(poles)
+                    return Count2CorrelationPoles(poles)
             return _project_to_poles(self, **kwargs)
         if mode == 'wedges':
             return _project_to_wedges(self, **kwargs)
@@ -1420,10 +1436,17 @@ class Count2Correlation(LeafLikeObservableTree):
     @classmethod
     def _sumweight(cls, observables, name, weights=None):
         # weights to be applied to the leaves (Count2)
+
+        def get_count(observable):
+            count = observable.get(observable.count_names[0])
+            if isinstance(count, Count2Poles):
+                return count.get(0)
+            return count
+
         input_weights = True
         if weights is None:
             # First is presumably DD
-            weights = [observable.get(observable.count_names[0]).norm for observable in observables]
+            weights = [get_count(observable).values('norm') for observable in observables]
             input_weights = False
         if name is None or name in ['normalized_counts']:
             sumweights = sum(weights)
@@ -1513,7 +1536,7 @@ class Count2JackknifeCorrelation(Count2Correlation):
         """
         value = super().value()
         if return_type is None:
-            kw = {name: self.get(name) for name in self.count_names}
+            kw = {name: self.get(name).value(return_type=None) for name in self.count_names}
             return Count2Correlation(**kw, estimator=self.estimator, attrs=self.attrs)
         return value
 
@@ -1782,7 +1805,7 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None, kw
     muedges = estimator.edges('mu')
     dmu = np.diff(muedges, axis=-1)[..., 0]
     values, mask = [], []
-    estimator_value, estimator_RR, estimator_norm = estimator.value(), estimator.get('RR').value(), estimator.get('DD').norm
+    estimator_value, estimator_RR, estimator_norm = estimator.value(), estimator.get('RR').value(), estimator.get('DD').values('norm')
     for ell in ells:
         # \sum_{i} \xi_{i} \int_{\mu_{i}}^{\mu_{i+1}} L_{\ell}(\mu^{\prime}) d\mu^{\prime}
         poly = special.legendre(ell).integ()(muedges)
@@ -1860,7 +1883,7 @@ def _project_to_wedges(estimator, wedges=None, ignore_nan=False, kw_covariance=N
     mumid = np.mean(muedges, axis=-1)
     dmu = np.diff(muedges, axis=-1)[..., 0]
     values, mask = [], []
-    estimator_value, estimator_RR, estimator_norm = estimator.value(), estimator.get('RR').value(), estimator.get('DD').norm
+    estimator_value, estimator_RR, estimator_norm = estimator.value(), estimator.get('RR').value(), estimator.get('DD').values('norm')
     for wedge in wedges:
         mask_w = (mumid >= wedge[0]) & (mumid < wedge[1])
         mask_ws = []
@@ -1921,7 +1944,7 @@ def _project_to_wp(estimator, ignore_nan=False, kw_covariance=None):
     assert list(estimator.coords()) == ['rp', 'pi']
     piedges = estimator.edges('pi')
     dpi = np.diff(piedges, axis=-1)[..., 0]
-    estimator_value, estimator_RR, estimator_norm = estimator.value(), estimator.get('RR').value(), estimator.get('DD').norm
+    estimator_value, estimator_RR, estimator_norm = estimator.value(), estimator.get('RR').value(), estimator.get('DD').values('norm')
     mask = []
     if ignore_nan:
         value, RR0, norm = (np.empty(estimator_value.shape[0], dtype=estimator_value.dtype) for i in range(3))
@@ -1995,7 +2018,7 @@ class Count2CorrelationPole(ObservableLeaf):
     def _sumweight(cls, observables, name=None, weights=None):
         input_weights = True
         if weights is None:
-            weights = [observable.norm for observable in observables]
+            weights = [observable.values('norm') for observable in observables]
             input_weights = False
         if name is None or name in ['value', 'RR0']:
             sumweights = sum(weights)
@@ -2455,7 +2478,7 @@ class Count3Pole(Count3):
 
 
 @register_type
-class Count3Poles(ObservableTree):
+class Count3Poles(LeafLikeObservableTree):
     r"""
     Container for multiple triplet poles :math:`C_{\ell_1 \ell_2}^{m}`.
 
@@ -2477,11 +2500,33 @@ class Count3Poles(ObservableTree):
         if ells is None: ells = [pole.ell for pole in poles]
         super().__init__(poles, ells=ells, attrs=attrs)
 
+    @property
+    def is_raveled(self):
+        return len(self._coords_names) == 1
+
     def ravel(self):
         return self.map(lambda leaf: leaf.ravel())
 
     def unravel(self):
         return self.map(lambda leaf: leaf.unravel())
+
+    def coords(self, *args, **kwargs):
+        """
+        Get coordinate array(s).
+
+        Parameters
+        ----------
+        axis : str or int, optional
+            Name or index of coordinate.
+
+        Returns
+        -------
+        coords : array or dict
+        """
+        return self.get((0, 0, 0)).coords(*args, **kwargs)
+
+    def value(self, concatenate=True):
+        return ObservableTree.value(self, concatenate=concatenate)
 
 
 @register_type
@@ -2556,8 +2601,11 @@ class Count3Correlation(LeafLikeObservableTree):
                 RRRbar = {ell: RRR.get(ell).value() / RRR0 for ell in RRR.ells}
                 matrix = _build_edge_matrix3(ellmax, RRRbar)
                 corr = corr.reshape(matrix.shape[1:])
-                return np.tensordot(matrix, corr, axes=([1, 2], [0, 1]))
-            return corr / RRR
+                matrix = np.moveaxis(matrix, (0, 1), (-2, -1))
+                rhs = np.moveaxis(corr, 0, -1)
+                toret = np.linalg.solve(matrix, rhs[..., None])[..., 0]
+                return np.moveaxis(toret, -1, 0)
+            return corr / RRR.value()
 
         if self.estimator == 'landyszalay':
             scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
@@ -2592,6 +2640,15 @@ class Count3Correlation(LeafLikeObservableTree):
         value = self.value()
         RRR = self.get('RRR')
         if isinstance(RRR, Count3Poles):
+
+            def ravel(count):
+                try:
+                    return count.ravel()
+                except AssertionError:
+                    return count
+
+            is_raveled = RRR.get((0, 0, 0)).is_raveled
+            RRR = ravel(RRR)
             coords, edges = RRR.coords(), RRR.edges()
             edges = {_edges_name(name): edges for name, edges in edges.items()}
             ells = kwargs.get('ells', None)
@@ -2600,14 +2657,16 @@ class Count3Correlation(LeafLikeObservableTree):
             isscalar = np.ndim(ells) == 0
             if isscalar: ells = [ells]
             ills = [RRR.ells.index(tuple(ell)) for ell in ells]
-            RRR0 = RRR.get((0, 0, 0))
-            norm = self.get('DDD').get((0, 0, 0)).values('norm')
+            RRR0 = ravel(RRR.get((0, 0, 0)))
+            norm = ravel(self.get('DDD').get((0, 0, 0))).values('norm')
             poles = []
             for ill, ell in zip(ills, ells):
-                pole = Count3CorrelationPole(**coords, **edges, value=value[ill], RRR0=RRR0.value(),
+                pole = Count3CorrelationPole(**coords, **edges, value=value[ill].ravel(), RRR0=RRR0.value(),
                                              norm=norm, ell=ell, attrs=self.attrs, **kwargs)
+                if not is_raveled:
+                    pole = pole.unravel()
                 poles.append(pole)
-            poles = Count3CorrelationPoles(poles)
+            return Count3CorrelationPoles(poles)
         else:
             raise NotImplementedError
 
@@ -2620,10 +2679,17 @@ class Count3Correlation(LeafLikeObservableTree):
     @classmethod
     def _sumweight(cls, observables, name, weights=None):
         # weights to be applied to the leaves (Count3)
+
+        def get_count(observable):
+            count = observable.get(observable.count_names[0])
+            if isinstance(count, Count3Poles):
+                return count.get((0, 0, 0))
+            return count
+
         input_weights = True
         if weights is None:
             # First is presumably DDD
-            weights = [observable.get(observable.count_names[0]).norm for observable in observables]
+            weights = [get_count(observable).values('norm') for observable in observables]
             input_weights = False
         if name is None or name in ['normalized_counts']:
             sumweights = sum(weights)
@@ -2672,12 +2738,32 @@ class Count3CorrelationPole(ObservableLeaf):
     """
     _name = 'count3_correlation_pole'
 
-    def __init__(self, s=None, s_edges=None, value=None, RR0=None, norm=None, ell=None, attrs=None, **kwargs):
-        if RR0 is None: RR0 = my_ones_like(value)
-        if norm is None: norm = my_ones_like(value)
-        super().__init__(s=s, s_edges=s_edges, value=value, RR0=RR0, norm=norm, coords=['s'], attrs=attrs)
+class Count3CorrelationPole(ObservableLeaf):
+    _name = 'count3_correlation_pole'
+
+    def __init__(self, s=None, s_edges=None, value=None, RRR0=None, norm=None,
+                 ell=None, attrs=None, **kwargs):
+
+        if RRR0 is None:
+            RRR0 = my_ones_like(value)
+        if norm is None:
+            norm = my_ones_like(value)
+
+        kw = dict(s=s, s_edges=s_edges)
+        if s_edges is None:
+            kw.pop('s_edges')
+
+        coords = ['s']
+        if isinstance(s, tuple):
+            kw = {f's{idim + 1:d}': coord for idim, coord in enumerate(s)}
+            coords = list(kw)
+            if s_edges is not None:
+                kw.update({f's{idim + 1:d}_edges': edge for idim, edge in enumerate(s_edges)})
+
+        super().__init__(**kw, value=value, RRR0=RRR0, norm=norm, coords=coords, attrs=attrs, **kwargs)
+
         if ell is not None:
-            self._meta['ell'] = ell
+            self._meta['ell'] = tuple(ell)
 
     def _update(self, **kwargs):
         super()._update(**kwargs)
@@ -2694,7 +2780,7 @@ class Count3CorrelationPole(ObservableLeaf):
     def _sumweight(cls, observables, name=None, weights=None):
         input_weights = True
         if weights is None:
-            weights = [observable.norm for observable in observables]
+            weights = [observable.values('norm') for observable in observables]
             input_weights = False
         if name is None or name in ['value', 'RRR0']:
             sumweights = sum(weights)
@@ -2711,6 +2797,10 @@ class Count3CorrelationPole(ObservableLeaf):
                 return [weight / sumweights for weight in weights]
             return [1] * len(observables)  # just sum norm
         raise ValueError(f'{name} weights not implemented')
+
+    @property
+    def is_raveled(self):
+        return len(self._coords_names) == 1
 
     def unravel(self):
         """Unravel the coordinate axis 's' into 's1', 's2' (and 's3')."""
@@ -2830,7 +2920,7 @@ class Count3CorrelationPoles(ObservableTree):
             ax = fig.axes[0]
         for ell in self.ells:
             pole = self.get(ell)
-            pole.plot(fig=ax, label=rf'$\ell = {ell:d}$')
+            pole.plot(fig=ax, label=rf'$\ell = {ell}$')
         ax.legend(frameon=False)
         return fig
 
@@ -2838,7 +2928,7 @@ class Count3CorrelationPoles(ObservableTree):
 from functools import lru_cache
 
 
-def _build_edge_matrix2(ells, RRbar, ellsin=None):
+def _build_edge_matrix2(ells, RRbar):
     r"""
     Build the 2PCF edge-correction matrix.
 
@@ -2873,18 +2963,16 @@ def _build_edge_matrix2(ells, RRbar, ellsin=None):
         return (2 * k + 1) * float(wigner_3j(l, lp, k, 0, 0, 0))**2
 
     ells = list(ells)
-    ellsin = ells if ellsin is None else list(ellsin)
-
     f = dict(RRbar)
     f.setdefault(0, 1.0)
 
     M = None
 
     for i, ellout in enumerate(ells):
-        for j, ellin in enumerate(ellsin):
+        for j, ellin in enumerate(ells):
             for k, fk in f.items():
                 if M is None:
-                    M = np.zeros((len(ells), len(ellsin)) + fk.shape, dtype=float)
+                    M = np.zeros((len(ells), len(ells)) + fk.shape, dtype=float)
                 M[i, j] += 1. * (ellout == ellin) + fk * legendre_product_coeff(ellout, ellin, k)
 
     return M

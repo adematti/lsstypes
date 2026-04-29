@@ -2180,7 +2180,7 @@ class ObservableTree(object):
         value : list or array
         """
         assert isinstance(concatenate, bool)
-        leaves = tree_flatten(self, level=1)
+        leaves = tree_flatten(self, level=1, is_leaf='input_not_leaf')
         values = [leaf.value().ravel() for leaf in leaves]
         if concatenate:
             return np.concatenate(values, axis=0)
