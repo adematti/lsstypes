@@ -3307,8 +3307,7 @@ def _slepian_to_sugiyama_matrix(ell1, ell2, tol=1e-12):
 
             coeff = prefactor * ((-1) ** m) * W
 
-            # Stored Slepian basis uses |m|, so m > 0 folds +m and -m.
-            A[iL, im] = coeff if m == 0 else 2.0 * coeff
+            A[iL, im] = coeff
 
     return Ls, ms, A
 
