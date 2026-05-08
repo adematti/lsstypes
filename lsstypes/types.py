@@ -1,4 +1,5 @@
 import functools
+import itertools
 import operator
 import numpy as np
 
@@ -626,6 +627,14 @@ class Mesh3SpectrumPoles(ObservableTree):
         if ells is None: ells = [pole.ell for pole in poles]
         super().__init__(poles, ells=ells, attrs=attrs)
 
+    @property
+    def basis(self):
+        return self._branches[0].basis
+
+    @property
+    def is_raveled(self):
+        return all(pole.is_raveled for pole in self._branches)
+
     def ravel(self):
         return self.map(lambda leaf: leaf.ravel())
 
@@ -655,7 +664,7 @@ class Mesh3SpectrumPoles(ObservableTree):
             Figure object.
         """
         from matplotlib import pyplot as plt
-        if all(leaf.is_raveled for leaf in self):
+        if self.is_raveled:
             if fig is None:
                 fig, ax = plt.subplots()
             else:
@@ -868,6 +877,14 @@ class Mesh3CorrelationPoles(ObservableTree):
         if ells is None: ells = [pole.ell for pole in poles]
         super().__init__(poles, ells=ells, attrs=attrs)
 
+    @property
+    def basis(self):
+        return self._branches[0].basis
+
+    @property
+    def is_raveled(self):
+        return all(pole.is_raveled for pole in self._branches)
+
     def ravel(self):
         return self.map(lambda leaf: leaf.ravel())
 
@@ -897,7 +914,7 @@ class Mesh3CorrelationPoles(ObservableTree):
             Figure object.
         """
         from matplotlib import pyplot as plt
-        if all(leaf.is_raveled for leaf in self):
+        if self.is_raveled:
             if fig is None:
                 fig, ax = plt.subplots()
             else:
@@ -2574,10 +2591,11 @@ class Count3Pole(Count3):
     """
     _name = 'count3_pole'
 
-    def __init__(self, counts=None, norm=None, attrs=None, ell=None, **kwargs):
+    def __init__(self, counts=None, norm=None, attrs=None, ell=None, basis='slepian', **kwargs):
         super().__init__(counts=counts, norm=norm, attrs=attrs, **kwargs)
         if ell is not None:
             self._meta['ell'] = tuple(ell)  # (ell1, ell2, m)
+        self._meta['basis'] = basis
 
 
 @register_type
@@ -2630,6 +2648,46 @@ class Count3Poles(LeafLikeObservableTree):
 
     def value(self, concatenate=True):
         return ObservableTree.value(self, concatenate=concatenate)
+
+    @property
+    def basis(self):
+        return self._branches[0]._meta.get('basis', 'slepian')
+
+    def to_basis(self, basis, ells=None):
+        """
+        Convert poles to another angular basis.
+
+        Parameters
+        ----------
+        basis : {'slepian', 'sugiyama'}
+            Output basis.
+        ells : list[tuple], optional
+            Requested output multipoles. If ``None``, all modes compatible
+            with the input ``(ell1, ell2)`` pairs are returned.
+
+        Returns
+        -------
+        new : Count3Poles
+            New object in the requested basis.
+        """
+        if basis == self.basis:
+            new = self.copy()
+            if ells is not None:
+                new = new.get(ells=ells)
+            return new
+
+        ells_in = list(self.ells)
+        ells_out, matrix = basis_transform_matrix3(ells_in, basis_in=self.basis, basis_out=basis, ells_out=ells)
+
+        template = self._branches[0]
+        values_in = np.array([pole.value() for pole in self._branches])
+
+        branches = []
+        for iout, ell in enumerate(ells_out):
+            value = np.tensordot(matrix[iout], values_in, axes=(0, 0))
+            pole = template.clone(value=value, meta=template._meta.copy() | dict(ell=ell, basis=basis))
+            branches.append(pole)
+        return self.__class__(branches, ells=ells_out, attrs=self.attrs)
 
 
 @register_type
@@ -2702,7 +2760,7 @@ class Count3Correlation(LeafLikeObservableTree):
                 ellmax = max(max(ell[:2]) for ell in RRR.ells)
                 RRR0 = RRR.get((0, 0, 0)).value()
                 RRRbar = {ell: RRR.get(ell).value() / RRR0 for ell in RRR.ells}
-                matrix = _build_edge_matrix3(ellmax, RRRbar)
+                matrix = _build_edge_matrix3(ellmax, RRRbar, basis=RRR.basis)
                 # New shape (len(ells), len(s1), len(s2))
                 corr = corr.reshape(matrix.shape[1:]) / RRR0
                 matrix = np.moveaxis(matrix, (0, 1), (-2, -1))
@@ -2766,7 +2824,7 @@ class Count3Correlation(LeafLikeObservableTree):
             poles = []
             for ill, ell in zip(ills, ells):
                 pole = Count3CorrelationPole(**coords, **edges, value=value[ill].ravel(), RRR0=RRR0.value(),
-                                             norm=norm, ell=ell, attrs=self.attrs, **kwargs)
+                                             norm=norm, ell=ell, attrs=self.attrs, basis=RRR.basis, **kwargs)
                 if not is_raveled:
                     pole = pole.unravel()
                 poles.append(pole)
@@ -2846,7 +2904,7 @@ class Count3CorrelationPole(ObservableLeaf):
     _name = 'count3_correlation_pole'
 
     def __init__(self, s=None, s_edges=None, value=None, RRR0=None, norm=None,
-                 ell=None, attrs=None, **kwargs):
+                 ell=None, attrs=None, basis='slepian', **kwargs):
 
         if RRR0 is None:
             RRR0 = my_ones_like(value)
@@ -2868,6 +2926,7 @@ class Count3CorrelationPole(ObservableLeaf):
 
         if ell is not None:
             self._meta['ell'] = tuple(ell)
+        self._meta['basis'] = basis
 
     def _update(self, **kwargs):
         super()._update(**kwargs)
@@ -2920,7 +2979,10 @@ class Count3CorrelationPole(ObservableLeaf):
         if name in ['s1', 's2', 's3']:
             return rf'$s_{{{name[-1]}}}$ [$\mathrm{{Mpc}}/h$]'
         if name == 'value':
-            return r'$\zeta_{\ell_1, \ell_2, \ell_3}(s_1, s_2)$'
+            if self.basis == 'slepian':
+                return r'$\zeta_{\ell_1, \ell_2}^{m}(s_1, s_2)$'
+            else:
+                return r'$\zeta_{\ell_1, \ell_2, \ell_3}(s_1, s_2)$'
         return None
 
     @plotter
@@ -2954,7 +3016,7 @@ class Count3CorrelationPole(ObservableLeaf):
             coord = self.coords(0)
             ax.plot(np.arange(len(coord)), coord.prod(axis=-1)**2 * self.value(), **kwargs)
             ax.set_xlabel('bin index')
-            ax.set_ylabel(r'$s_1 s_2 \zeta}(s_1, s_2)$ [$(\mathrm{Mpc}/h)^{4}$]')
+            ax.set_ylabel(r'$s_1 s_2 \zeta(s_1, s_2)$ [$(\mathrm{Mpc}/h)^{2}$]')
         else:
             coords = list(self.coords().values())
             if len(coords) > 2:
@@ -2989,11 +3051,39 @@ class Count3CorrelationPoles(ObservableTree):
         if ells is None: ells = [pole.ell for pole in poles]
         super().__init__(poles, ells=ells, attrs=attrs)
 
+    @property
+    def basis(self):
+        return self._branches[0]._meta.get('basis', 'slepian')
+
+    @property
+    def is_raveled(self):
+        return all(pole.is_raveled for pole in self._branches)
+
     def ravel(self):
         return self.map(lambda leaf: leaf.ravel())
 
     def unravel(self):
         return self.map(lambda leaf: leaf.unravel())
+
+    def to_basis(self, basis, ells=None):
+        """
+        Convert poles to another angular basis.
+
+        Parameters
+        ----------
+        basis : {'slepian', 'sugiyama'}
+            Output basis.
+        ells : list[tuple], optional
+            Requested output multipoles. If ``None``, all modes compatible
+            with the input ``(ell1, ell2)`` pairs are returned.
+
+        Returns
+        -------
+        new : Count3CorrelationPoles
+            New object in the requested basis.
+        """
+        return Count3Poles.to_basis(self, basis=basis, ells=ells)
+
 
     @plotter
     def plot(self, fig=None):
@@ -3032,6 +3122,12 @@ class Count3CorrelationPoles(ObservableTree):
 from functools import lru_cache
 
 
+def wigner_3j(*ells):
+    from sympy.physics.wigner import wigner_3j
+    ells = map(int, ells)
+    return float(wigner_3j(*ells))
+
+
 def _build_edge_matrix2(ells, RRbar):
     r"""
     Build the 2PCF edge-correction matrix.
@@ -3055,12 +3151,11 @@ def _build_edge_matrix2(ells, RRbar):
     """
     @lru_cache(None)
     def coeff(ellout, ellin, k):
-        from sympy.physics.wigner import wigner_3j
         if ellout < abs(ellin - k) or ellout > ellin + k:
             return 0.0
         if (ellout + ellin + k) % 2:
             return 0.0
-        return (2 * ellout + 1) * float(wigner_3j(ellin, k, ellout, 0, 0, 0))**2
+        return (2 * ellout + 1) * wigner_3j(ellin, k, ellout, 0, 0, 0)**2
 
     ells = list(ells)
     f = dict(RRbar)
@@ -3076,26 +3171,30 @@ def _build_edge_matrix2(ells, RRbar):
     return M
 
 
-def _build_edge_matrix3(ellmax, RRRbar):
+def _build_edge_matrix3(ellmax, RRRbar, basis="slepian"):
     r"""
-    Build edge-correction matrix 1 + M following Eq. 29 of https://arxiv.org/pdf/1709.10150.
+    Build edge-correction matrix 1 + M following Eq. 29 of
+    https://arxiv.org/pdf/1709.10150.
 
     Parameters
     ----------
-    states : list[(int,int,int)]
-        Basis states, e.g. [(l, lp, |m|), ...].
-        Same list is used for rows (j,jp,|s|) and columns (l,lp,|m|).
+    ellmax : int
     RRRbar : dict
-        Random edge factors RRRbar[(k, kp, abs_p)] = Rbar^{|p|}_{kk'} / Rbar^0_{00}.
-        Should include all truncated k, k' modes desired. The (0, 0, 0) term is skipped.
+        Random edge factors in Slepian-like labels:
+        RRRbar[(k, kp, abs_p)] = Rbar^{|p|}_{kk'} / Rbar^0_{00}.
+    basis : {"slepian", "sugiyama"}, default="slepian"
+        Output/input coefficient basis for the returned matrix.
 
     Returns
     -------
-    M : ndarray, shape (nstate, nstate)
-        Edge correction matrix in :math:`\bar{N} / R_{000} = M \bar{\zeta}`.
+    M : ndarray
+        Matrix such that Nbar_basis = M @ zetabar_basis.
     """
+    if basis not in ["slepian", "sugiyama"]:
+        raise ValueError(f"Unknown basis {basis!r}")
+
     def get_ells(ellmax):
-        """ll'm used for ζbar^{|m|}_{ll'} or Nbar^{|s|}_{jj'}."""
+        """Slepian ll'|m| labels."""
         out = []
         for ell in range(ellmax + 1):
             for ellp in range(ellmax + 1):
@@ -3109,23 +3208,192 @@ def _build_edge_matrix3(ellmax, RRRbar):
         from sympy.physics.wigner import gaunt
         return float(gaunt(l1, l2, l3, m1, m2, m3))
 
-    ells = get_ells(ellmax)
-    M = None
+    ells_slepian = get_ells(ellmax)
+    M_slepian = None
 
-    for a, (j, jp, s) in enumerate(ells):          # row: Nbar^{|s|}_{jj'}
-        for b, (l, lp, m) in enumerate(ells):      # col: zetabar^{|m|}_{ll'}
+    for a, (j, jp, s) in enumerate(ells_slepian):
+        for b, (l, lp, m) in enumerate(ells_slepian):
             p = s - m
             ap = abs(p)
             val = 0.0
+
             for (k, kp, p_abs), f in RRRbar.items():
                 if p_abs != ap:
                     continue
                 if k == 0 and kp == 0 and ap == 0:
                     continue
-                val += f * G(l,  k,  j,  m,  p, -s) * G(lp, kp, jp, -m, -p,  s)
-            if M is None:
-                val = np.asarray(val)
-                M = np.zeros((len(ells), len(ells)) + val.shape, dtype=float)
-            M[a, b] = 1. * (a == b) + val
 
-    return M
+                val += f * G(l, k, j, m, p, -s) * G(lp, kp, jp, -m, -p, s)
+
+            if M_slepian is None:
+                val = np.asarray(val)
+                M_slepian = np.zeros((len(ells_slepian), len(ells_slepian)) + val.shape, dtype=float)
+
+            M_slepian[a, b] = 1.0 * (a == b) + val
+
+    if basis == "slepian":
+        return M_slepian
+
+    ells_sugiyama, A = basis_transform_matrix3(ells_slepian, basis_in="slepian", basis_out="sugiyama")
+
+    _, B = basis_transform_matrix3(ells_sugiyama, basis_in="sugiyama", basis_out="slepian", ells_out=ells_slepian)
+
+    # N_sug = A N_slep = A M_slep zeta_slep = A M_slep B zeta_sug
+    return np.einsum("ai,ij...,jb->ab...", A, M_slepian, B)
+
+
+def _valid_sugiyama_L(ell1, ell2):
+    """Allowed L values with non-zero H_{ell1 ell2 L}."""
+    return [L for L in range(abs(ell1 - ell2), ell1 + ell2 + 1) if (ell1 + ell2 + L) % 2 == 0]
+
+
+def _valid_slepian_m(ell1, ell2):
+    """Stored |m| values."""
+    return list(range(min(ell1, ell2) + 1))
+
+
+def convert_ells(ells, basis_in, basis_out):
+    """Convert mode labels between Slepian (ell1, ell2, m) and Sugiyama (ell1, ell2, L)."""
+    if basis_in == basis_out:
+        return list(ells)
+
+    if basis_in not in ["slepian", "sugiyama"]:
+        raise ValueError(f"Unknown input basis {basis_in!r}")
+    if basis_out not in ["slepian", "sugiyama"]:
+        raise ValueError(f"Unknown output basis {basis_out!r}")
+
+    pairs = sorted(set((int(ell1), int(ell2)) for ell1, ell2, _ in ells))
+
+    out = []
+    if basis_in == "slepian" and basis_out == "sugiyama":
+        for ell1, ell2 in pairs:
+            for L in _valid_sugiyama_L(ell1, ell2):
+                out.append((ell1, ell2, L))
+        return out
+
+    if basis_in == "sugiyama" and basis_out == "slepian":
+        for ell1, ell2 in pairs:
+            for m in _valid_slepian_m(ell1, ell2):
+                out.append((ell1, ell2, m))
+        return out
+
+
+def _slepian_to_sugiyama_matrix(ell1, ell2, tol=1e-12):
+    """
+    Matrix A such that
+
+        zeta_sugiyama[L] = A[L, m] @ zeta_slepian[m]
+
+    for fixed (ell1, ell2), with m stored as |m| = 0..min(ell1, ell2).
+    """
+    ell1, ell2 = int(ell1), int(ell2)
+    Ls = _valid_sugiyama_L(ell1, ell2)
+    ms = _valid_slepian_m(ell1, ell2)
+
+    A = np.zeros((len(Ls), len(ms)), dtype=float)
+    norm = np.sqrt((2 * ell1 + 1) * (2 * ell2 + 1))
+
+    for iL, L in enumerate(Ls):
+        H = float(wigner_3j(ell1, ell2, L, 0, 0, 0))
+        if abs(H) < tol:
+            continue
+
+        prefactor = (2 * L + 1) * H * norm
+
+        for im, m in enumerate(ms):
+            W = float(wigner_3j(ell1, ell2, L, m, -m, 0))
+            if abs(W) < tol:
+                continue
+
+            coeff = prefactor * ((-1) ** m) * W
+
+            # Stored Slepian basis uses |m|, so m > 0 folds +m and -m.
+            A[iL, im] = coeff if m == 0 else 2.0 * coeff
+
+    return Ls, ms, A
+
+
+def _sugiyama_to_slepian_matrix(ell1, ell2):
+    """
+    Matrix B such that
+
+        zeta_slepian[m] = B[m, L] @ zeta_sugiyama[L]
+
+    for fixed (ell1, ell2).
+    """
+    Ls, ms, A = _slepian_to_sugiyama_matrix(ell1, ell2)
+    B = np.linalg.inv(A)
+    return ms, Ls, B
+
+
+def basis_transform_matrix3(ells_in, basis_in, basis_out, ells_out=None, tol=1e-12):
+    """
+    Build global matrix such that coeffs_out = M @ coeffs_in.
+    """
+    if basis_in not in ["slepian", "sugiyama"]:
+        raise ValueError(f"Unknown basis_in {basis_in!r}")
+    if basis_out not in ["slepian", "sugiyama"]:
+        raise ValueError(f"Unknown basis_out {basis_out!r}")
+
+    # Normalize input format.
+    if len(ells_in) == 3 and np.ndim(ells_in[0]) == 0:
+        ells_in = [tuple(ells_in)]
+    else:
+        ells_in = [tuple(ell) for ell in ells_in]
+
+    if ells_out is None:
+        ells_out = convert_ells(ells_in, basis_in, basis_out)
+    elif len(ells_out) == 3 and np.ndim(ells_out[0]) == 0:
+        ells_out = [tuple(ells_out)]
+    else:
+        ells_out = [tuple(ell) for ell in ells_out]
+
+    index_in = {ell: i for i, ell in enumerate(ells_in)}
+    index_out = {ell: i for i, ell in enumerate(ells_out)}
+
+    M = np.zeros((len(ells_out), len(ells_in)), dtype=float)
+
+    pairs = []
+    for ell1, ell2, _ in itertools.chain(ells_in, ells_out):
+        pair = (int(ell1), int(ell2))
+        if pair not in pairs:
+            pairs.append(pair)
+
+    for ell1, ell2 in pairs:
+
+        if basis_in == basis_out:
+            for ell in set(ells_in).intersection(ells_out):
+                if ell[:2] == (ell1, ell2):
+                    M[index_out[ell], index_in[ell]] = 1.0
+
+        elif basis_in == "slepian" and basis_out == "sugiyama":
+            Ls, ms, block = _slepian_to_sugiyama_matrix(ell1, ell2, tol=tol)
+
+            for iL, L in enumerate(Ls):
+                row_key = (ell1, ell2, L)
+                if row_key not in index_out:
+                    continue
+
+                for im, m in enumerate(ms):
+                    col_key = (ell1, ell2, m)
+                    if col_key not in index_in:
+                        continue
+
+                    M[index_out[row_key], index_in[col_key]] = block[iL, im]
+
+        elif basis_in == "sugiyama" and basis_out == "slepian":
+            ms, Ls, block = _sugiyama_to_slepian_matrix(ell1, ell2)
+
+            for im, m in enumerate(ms):
+                row_key = (ell1, ell2, m)
+                if row_key not in index_out:
+                    continue
+
+                for iL, L in enumerate(Ls):
+                    col_key = (ell1, ell2, L)
+                    if col_key not in index_in:
+                        continue
+
+                    M[index_out[row_key], index_in[col_key]] = block[im, iL]
+
+    return ells_out, M

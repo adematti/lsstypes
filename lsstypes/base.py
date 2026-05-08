@@ -547,9 +547,7 @@ def sparse_tensordot(matrix, tmp, axis):
 
     tmp_front = np.moveaxis(tmp, iaxis, 0)      # (n, ...)
     tmp_2d = tmp_front.reshape(tmp_front.shape[0], -1)
-
     out_2d = matrix @ tmp_2d                   # (m, k)
-
     out = out_2d.reshape((matrix.shape[0],) + tmp_front.shape[1:])
 
     # Match np.moveaxis(np.tensordot(...), 0, axis)

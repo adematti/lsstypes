@@ -858,6 +858,18 @@ def test_types(show=False):
     assert isinstance(poles, Count3CorrelationPoles)
     assert poles.ells == correlation.get('RRR').ells
 
+    # slepian - sugiyama conversion
+    RRR = correlation.get('RRR')
+    assert RRR.basis == 'slepian'
+    RRR2 = RRR.to_basis('sugiyama')
+    assert RRR2.basis == 'sugiyama'
+    RRR2 = RRR2.to_basis('slepian')
+    assert np.allclose(RRR2.value(), RRR.value())
+    poles2 = poles.to_basis('sugiyama')
+    assert poles2.basis == 'sugiyama'
+    poles2 = poles2.to_basis('slepian')
+    assert np.allclose(poles2.value(), poles.value())
+
     # check one projected pole has expected coords and shape
     pole = poles.get((1, 1, 0))
     assert np.allclose(pole.coords('s1'), correlation.get('RRR').get((1, 1, 0)).coords('s1'))
@@ -939,83 +951,86 @@ def test_window_correction_count2(show=False):
 
 def test_window_correction_count3(show=False):
     from lsstypes import Count3Pole, Count3Poles, Count3Correlation
-    from lsstypes.types import _build_edge_matrix3
+    from lsstypes.types import _build_edge_matrix3, convert_ells
 
-    def get_ells(ellmax):
-        return [
+    def get_ells(ellmax, basis="slepian"):
+        ells = [
             (ell, ellp, m)
             for ell in range(ellmax + 1)
             for ellp in range(ellmax + 1)
             for m in range(min(ell, ellp) + 1)
         ]
+        if basis == "slepian":
+            return ells
+        return convert_ells(ells, basis_in="slepian", basis_out="sugiyama")
 
-    def get_poles_from_values(values, ells, s1, s2, s1_edges, s2_edges):
+    def get_poles_from_values(values, ells, s1, s2, s1_edges, s2_edges, basis):
         poles = []
         for ill, ell in enumerate(ells):
-            poles.append(
-                Count3Pole(
-                    counts=values[ill],
-                    norm=np.ones_like(values[ill]),
-                    s1=s1,
-                    s2=s2,
-                    s1_edges=s1_edges,
-                    s2_edges=s2_edges,
-                    coords=["s1", "s2"],
-                    ell=ell,
-                )
-            )
+            poles.append(Count3Pole(counts=values[ill], norm=np.ones_like(values[ill]),
+                                    s1=s1, s2=s2, s1_edges=s1_edges, s2_edges=s2_edges,
+                                    coords=["s1", "s2"], ell=ell, basis=basis))
         return Count3Poles(poles)
 
     rng = np.random.RandomState(seed=42)
 
     ellmax = 3
-    ells = get_ells(ellmax)
-    target_ells = [(0, 0, 0), (1, 1, 0), (1, 1, 1), (2, 0, 0), (2, 2, 0), (2, 2, 1)]
-
     s_edges_1d = np.linspace(0.0, 200.0, 11)
     s_edges_1d = np.column_stack([s_edges_1d[:-1], s_edges_1d[1:]])
     s = np.mean(s_edges_1d, axis=-1)
     shape = (s.size, s.size)
 
-    # RRR_000, with s1/s2 dependence.
-    RRR0 = 10.0 + rng.uniform(size=shape)
+    slepian_target_ells = [(0, 0, 0), (1, 1, 0), (1, 1, 1), (2, 0, 0), (2, 2, 0), (2, 2, 1)]
 
-    # Build anisotropic random window multipoles RRRbar = RRR_ell / RRR_000.
-    RRRbar = {(0, 0, 0): np.ones_like(RRR0)}
-    for ell in ells:
-        if ell == (0, 0, 0):
-            continue
-        RRRbar[ell] = 0.05 * rng.normal(size=shape)
+    for basis in ["slepian", "sugiyama"]:
 
-    RRR_values = np.array([RRR0 * RRRbar[ell] for ell in ells])
+        ells = get_ells(ellmax, basis=basis)
 
-    # Input true zeta multipoles.
-    zeta_true = np.zeros((len(ells),) + shape)
-    for ill, ell in enumerate(ells):
-        if ell in target_ells:
-            zeta_true[ill] = 0.01 * rng.normal(size=shape)
+        target_ells = (
+            slepian_target_ells
+            if basis == "slepian"
+            else convert_ells(slepian_target_ells, basis_in="slepian", basis_out="sugiyama")
+        )
 
-    # Forward model:
-    #   (DDD - RRR) / RRR_000 = W zeta
-    # where W is the edge/window matrix used by Count3Correlation.value().
-    W = _build_edge_matrix3(ellmax, RRRbar)
-    W = np.moveaxis(W, (0, 1), (-2, -1))
-    zeta_rhs = np.moveaxis(zeta_true, 0, -1)
-    num_over_RRR0 = np.einsum("...ab,...b->...a", W, zeta_rhs)
-    num_over_RRR0 = np.moveaxis(num_over_RRR0, -1, 0)
+        # RRR_000, with s1/s2 dependence.
+        RRR0 = 10.0 + rng.uniform(size=shape)
 
-    DDD_values = RRR_values + RRR0[None, ...] * num_over_RRR0
+        # Build anisotropic random window multipoles RRRbar = RRR_ell / RRR_000.
+        RRRbar = {(0, 0, 0): np.ones_like(RRR0)}
+        for ell in ells:
+            if ell == (0, 0, 0):
+                continue
+            RRRbar[ell] = 0.05 * rng.normal(size=shape)
 
-    RRR = get_poles_from_values(RRR_values, ells, s, s, s_edges_1d, s_edges_1d)
-    DDD = get_poles_from_values(DDD_values, ells, s, s, s_edges_1d, s_edges_1d)
+        RRR_values = np.array([RRR0 * RRRbar[ell] for ell in ells])
 
-    correlation = Count3Correlation(DDD=DDD, RRR=RRR, estimator="natural")
-    correlation = correlation.project(ells=target_ells)
+        # Input true zeta multipoles.
+        zeta_true = np.zeros((len(ells),) + shape)
+        for ill, ell in enumerate(ells):
+            if ell in target_ells:
+                zeta_true[ill] = 0.01 * rng.normal(size=shape)
 
-    for ell in target_ells:
-        pole = correlation.get(ell)
-        ill = ells.index(ell)
-        assert np.allclose(pole.value(), zeta_true[ill], rtol=1e-10, atol=1e-10)
+        # Forward model:
+        #   (DDD - RRR) / RRR_000 = W zeta
+        # where W is the edge/window matrix used by Count3Correlation.value().
+        W = _build_edge_matrix3(ellmax, RRRbar, basis=basis)
+        W = np.moveaxis(W, (0, 1), (-2, -1))
+        zeta_rhs = np.moveaxis(zeta_true, 0, -1)
+        num_over_RRR0 = np.einsum("...ab,...b->...a", W, zeta_rhs)
+        num_over_RRR0 = np.moveaxis(num_over_RRR0, -1, 0)
+
+        DDD_values = RRR_values + RRR0[None, ...] * num_over_RRR0
+
+        RRR = get_poles_from_values(RRR_values, ells, s, s, s_edges_1d, s_edges_1d, basis=basis)
+        DDD = get_poles_from_values(DDD_values, ells, s, s, s_edges_1d, s_edges_1d, basis=basis)
+
+        correlation = Count3Correlation(DDD=DDD, RRR=RRR, estimator="natural")
+        correlation = correlation.project(ells=target_ells)
+
+        for ell in target_ells:
+            pole = correlation.get(ell)
+            ill = ells.index(ell)
+            assert np.allclose(pole.value(), zeta_true[ill], rtol=1e-10, atol=1e-10)
 
 
 def test_select_reuses_mesh3_transform_signature():
