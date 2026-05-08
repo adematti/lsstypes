@@ -70,6 +70,10 @@ def test_tree():
     leaf2 = leaf.select(s=(10., 80.), mu=(-0.8, 1.))
     assert np.all(leaf2.coords('s') <= 80)
     assert np.all(leaf2.coords('mu') >= -0.8)
+    coords = leaf2.coords(['mu', 's'])
+    assert len(coords) == 2
+    assert np.allclose(coords[0], leaf2.coords('mu'))
+    assert np.allclose(coords[1], leaf2.coords('s'))
     assert leaf2.values('counts').ndim == 2
     assert leaf2.attrs == dict(los='x')
     leaf3 = leaf.at[...].select(s=(10., 80.), mu=(-0.8, 1.))

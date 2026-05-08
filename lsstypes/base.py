@@ -652,6 +652,8 @@ class ObservableLeaf(object):
         """
         if axis is None:
             return {axis: self.coords(axis=axis, center=center) for axis in self._coords_names}
+        if isinstance(axis, list):
+            return [self.coords(axis=axis, center=center) for axis in axis]
         if not isinstance(axis, str):
             axis = self._coords_names[axis]
         edges = self.edges(axis=axis, default=None)
@@ -689,7 +691,9 @@ class ObservableLeaf(object):
         edges : array or dict
         """
         if axis is None:
-            return {axis: self.edges(axis=axis) for axis in self._coords_names}
+            return {axis: self.edges(axis=axis, **kwargs) for axis in self._coords_names}
+        if isinstance(axis, list):
+            return [self.edges(axis=axis, **kwargs) for axis in axis]
         if not isinstance(axis, str):
             axis = self._coords_names[axis]
         axis_edges = _edges_name(axis)
