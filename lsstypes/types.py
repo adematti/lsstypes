@@ -1471,7 +1471,7 @@ class Count2Correlation(LeafLikeObservableTree):
             if isinstance(RR, Count2PolesLike):
                 RR0 = RR.get(0).value()
                 RRbar = {ell: RR.get(ell).value() / RR0 for ell in RR.ells}
-                matrix = _build_edge_matrix2(RR.ells, RRbar)
+                matrix = build_edge_matrix2(RR.ells, RRbar)
                 # New shape (len(ells), len(s))
                 corr = corr.reshape(matrix.shape[1:]) / RR0
                 matrix = np.moveaxis(matrix, (0, 1), (-2, -1))
@@ -2677,7 +2677,7 @@ class Count3Poles(LeafLikeObservableTree):
             return new
 
         ells_in = list(self.ells)
-        ells_out, matrix = basis_transform_matrix3(ells_in, basis_in=self.basis, basis_out=basis, ells_out=ells)
+        ells_out, matrix = build_basis_transform_matrix3(ells_in, basis_in=self.basis, basis_out=basis, ells_out=ells)
 
         template = self._branches[0]
         values_in = np.array([pole.value() for pole in self._branches])
@@ -2760,7 +2760,7 @@ class Count3Correlation(LeafLikeObservableTree):
                 ellmax = max(max(ell[:2]) for ell in RRR.ells)
                 RRR0 = RRR.get((0, 0, 0)).value()
                 RRRbar = {ell: RRR.get(ell).value() / RRR0 for ell in RRR.ells}
-                matrix = _build_edge_matrix3(ellmax, RRRbar, basis=RRR.basis)
+                matrix = build_edge_matrix3(ellmax, RRRbar, basis=RRR.basis)
                 # New shape (len(ells), len(s1), len(s2))
                 corr = corr.reshape(matrix.shape[1:]) / RRR0
                 matrix = np.moveaxis(matrix, (0, 1), (-2, -1))
@@ -3128,7 +3128,7 @@ def wigner_3j(*ells):
     return float(wigner_3j(*ells))
 
 
-def _build_edge_matrix2(ells, RRbar):
+def build_edge_matrix2(ells, RRbar):
     r"""
     Build the 2PCF edge-correction matrix.
 
@@ -3171,7 +3171,7 @@ def _build_edge_matrix2(ells, RRbar):
     return M
 
 
-def _build_edge_matrix3(ellmax, RRRbar, basis="slepian"):
+def build_edge_matrix3(ellmax, RRRbar, basis="slepian"):
     r"""
     Build edge-correction matrix 1 + M following Eq. 29 of
     https://arxiv.org/pdf/1709.10150.
@@ -3234,9 +3234,9 @@ def _build_edge_matrix3(ellmax, RRRbar, basis="slepian"):
     if basis == "slepian":
         return M_slepian
 
-    ells_sugiyama, A = basis_transform_matrix3(ells_slepian, basis_in="slepian", basis_out="sugiyama")
+    ells_sugiyama, A = build_basis_transform_matrix3(ells_slepian, basis_in="slepian", basis_out="sugiyama")
 
-    _, B = basis_transform_matrix3(ells_sugiyama, basis_in="sugiyama", basis_out="slepian", ells_out=ells_slepian)
+    _, B = build_basis_transform_matrix3(ells_sugiyama, basis_in="sugiyama", basis_out="slepian", ells_out=ells_slepian)
 
     # N_sug = A N_slep = A M_slep zeta_slep = A M_slep B zeta_sug
     return np.einsum("ai,ij...,jb->ab...", A, M_slepian, B)
@@ -3326,7 +3326,7 @@ def _sugiyama_to_slepian_matrix(ell1, ell2):
     return ms, Ls, B
 
 
-def basis_transform_matrix3(ells_in, basis_in, basis_out, ells_out=None, tol=1e-12):
+def build_basis_transform_matrix3(ells_in, basis_in, basis_out, ells_out=None, tol=1e-12):
     """
     Build global matrix such that coeffs_out = M @ coeffs_in.
     """
