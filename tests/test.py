@@ -876,6 +876,50 @@ def test_types(show=False):
     poles.plot(show=show)
 
 
+def test_window_correction():
+
+    def get_count(seed=42):
+        rng = np.random.RandomState(seed=seed)
+        coords = ['s', 'mu']
+        edges = [np.linspace(0., 200., 201), np.linspace(-1., 1., 101)]
+        edges = [np.column_stack([edge[:-1], edge[1:]]) for edge in edges]
+        coords_values = [np.mean(edge, axis=-1) for edge in edges]
+
+        counts = 1. + 0.1 * rng.uniform(size=tuple(v.size for v in coords_values))
+        mu = coords_values[1]
+        counts *= (1 + 0.2 * mu**2 + 0.2 * mu**4)  # add mu-dependence
+        return Count2(counts=counts, norm=np.ones_like(counts), **{coord: value for coord, value in zip(coords, coords_values)},
+                      **{f'{coord}_edges': value for coord, value in zip(coords, edges)}, coords=coords, attrs=dict(los='x'))
+
+    def get_correlations(seed=42, ells=(0, 2, 4)):
+        counts = {label: get_count(seed=seed + i) for i, label in enumerate(['DD', 'DR', 'RD', 'RR'])}
+        correlation_mu = Count2Correlation(**counts)
+
+        def get_poles(count):
+            edges = count.edges('mu')
+            poles = []
+            for ell in ells:
+                tmp = np.diff(special.legendre(ell)(edges), axis=-1)
+                pole = (2 * ell + 1) / 2. * np.sum(count.values('count') * tmp, axis=-1)
+                pole = Count2Pole(counts=pole, norm=count.values('norm') * np.ones_like(pole), s=count.coords('s'), s_edges=edges, coords=['s'], ell=ell)
+                poles.append(pole)
+            return Count2Poles(poles)
+
+        correlation_poles = Count2Correlation(**{label: get_poles(count, ells=ells) for label, count in counts.items()})
+        return correlation_mu, correlation_poles
+
+    ells = [0, 2, 4]
+    correlation_mu, correlation_poles = get_correlations(seed=42, ells=ells)
+    correlation_mu = correlation_mu.project(ells=ells)
+    ax = plt.gca()
+    for ill, ell in enumerate(ells):
+        pole = correlation_mu.get(ell)
+        ax.plot(s:=pole.coords('s'), pole.value(), color=color, linestyle='--')
+        pole = correlation_poles.get(ell)
+        ax.plot(s:=pole.coords('s'), pole.value(), color=color, linestyle='-')
+    plt.show()
+
+
 def test_select_reuses_mesh3_transform_signature():
     poles = _make_mesh3_spectrum_poles()
     rebinned = poles.select(k=slice(0, None, 3))

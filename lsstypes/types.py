@@ -1455,7 +1455,8 @@ class Count2Correlation(LeafLikeObservableTree):
                 RR0 = RR.get(0).value()
                 RRbar = {ell: RR.get(ell).value() / RR0 for ell in RR.ells}
                 matrix = _build_edge_matrix2(RR.ells, RRbar)
-                corr = corr.reshape(matrix.shape[1:])
+                # New shape (len(ells), len(s))
+                corr = corr.reshape(matrix.shape[1:]) / RR0
                 matrix = np.moveaxis(matrix, (0, 1), (-2, -1))
                 rhs = np.moveaxis(corr, 0, -1)
                 toret = np.linalg.solve(matrix, rhs[..., None])[..., 0]
@@ -2702,7 +2703,8 @@ class Count3Correlation(LeafLikeObservableTree):
                 RRR0 = RRR.get((0, 0, 0)).value()
                 RRRbar = {ell: RRR.get(ell).value() / RRR0 for ell in RRR.ells}
                 matrix = _build_edge_matrix3(ellmax, RRRbar)
-                corr = corr.reshape(matrix.shape[1:])
+                # New shape (len(ells), len(s1), len(s2))
+                corr = corr.reshape(matrix.shape[1:]) / RRR0
                 matrix = np.moveaxis(matrix, (0, 1), (-2, -1))
                 rhs = np.moveaxis(corr, 0, -1)
                 toret = np.linalg.solve(matrix, rhs[..., None])[..., 0]
@@ -2756,7 +2758,7 @@ class Count3Correlation(LeafLikeObservableTree):
             ells = kwargs.get('ells', None)
             if ells is None:
                 ells = RRR.ells
-            isscalar = np.ndim(ells) == 0
+            isscalar = np.ndim(ells) == 1
             if isscalar: ells = [ells]
             ills = [RRR.ells.index(tuple(ell)) for ell in ells]
             RRR0 = ravel(RRR.get((0, 0, 0)))
