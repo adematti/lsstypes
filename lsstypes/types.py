@@ -2755,7 +2755,7 @@ class Count3Correlation(LeafLikeObservableTree):
             RRR = ravel(RRR)
             coords, edges = RRR.coords(), RRR.edges()
             edges = {_edges_name(name): edges for name, edges in edges.items()}
-            ells = kwargs.get('ells', None)
+            ells = kwargs.pop('ells', None)
             if ells is None:
                 ells = RRR.ells
             isscalar = np.ndim(ells) == 1
@@ -3053,38 +3053,32 @@ def _build_edge_matrix2(ells, RRbar):
 
         If ``ellsin == ells`` and ``RRbar = {0: 1}``, this is the identity.
     """
-    import numpy as np
-    from functools import lru_cache
-    from sympy.physics.wigner import wigner_3j
-
     @lru_cache(None)
-    def legendre_product_coeff(l, lp, k):
-        """Coefficient C(l, lp, k) in P_l P_lp = sum_k C(l, lp, k) P_k."""
-        if k < abs(l - lp) or k > l + lp:
+    def coeff(ellout, ellin, k):
+        from sympy.physics.wigner import wigner_3j
+        if ellout < abs(ellin - k) or ellout > ellin + k:
             return 0.0
-        if (l + lp + k) % 2:
+        if (ellout + ellin + k) % 2:
             return 0.0
-        return (2 * k + 1) * float(wigner_3j(l, lp, k, 0, 0, 0))**2
+        return (2 * ellout + 1) * float(wigner_3j(ellin, k, ellout, 0, 0, 0))**2
 
     ells = list(ells)
     f = dict(RRbar)
-    f.setdefault(0, 1.0)
+    f.setdefault(0, np.ones_like(next(iter(f.values()))))
 
     M = None
-
     for i, ellout in enumerate(ells):
         for j, ellin in enumerate(ells):
             for k, fk in f.items():
                 if M is None:
-                    M = np.zeros((len(ells), len(ells)) + fk.shape, dtype=float)
-                M[i, j] += 1. * (ellout == ellin) + fk * legendre_product_coeff(ellout, ellin, k)
-
+                    M = np.zeros((len(ells), len(ells)) + np.shape(fk), dtype=float)
+                M[i, j] += fk * coeff(ellout, ellin, k)
     return M
 
 
 def _build_edge_matrix3(ellmax, RRRbar):
     r"""
-    Build edge-correction matrix M following Eq. 29 of https://arxiv.org/pdf/1709.10150.
+    Build edge-correction matrix 1 + M following Eq. 29 of https://arxiv.org/pdf/1709.10150.
 
     Parameters
     ----------
@@ -3098,7 +3092,7 @@ def _build_edge_matrix3(ellmax, RRRbar):
     Returns
     -------
     M : ndarray, shape (nstate, nstate)
-        Edge correction matrix in :math:`\bar{N} / R_{000} = (I + M) \bar{\zeta}`.
+        Edge correction matrix in :math:`\bar{N} / R_{000} = M \bar{\zeta}`.
     """
     def get_ells(ellmax):
         """ll'm used for ζbar^{|m|}_{ll'} or Nbar^{|s|}_{jj'}."""

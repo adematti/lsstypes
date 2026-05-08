@@ -876,18 +876,24 @@ def test_types(show=False):
     poles.plot(show=show)
 
 
-def test_window_correction():
+def test_window_correction_count2(show=False):
+
+    from scipy import special
+    from lsstypes import Count2, Count2Correlation, Count2Pole, Count2Poles
 
     def get_count(seed=42):
         rng = np.random.RandomState(seed=seed)
         coords = ['s', 'mu']
-        edges = [np.linspace(0., 200., 201), np.linspace(-1., 1., 101)]
+        edges = [np.linspace(0., 200., 21), np.linspace(-1., 1., 101)]
         edges = [np.column_stack([edge[:-1], edge[1:]]) for edge in edges]
         coords_values = [np.mean(edge, axis=-1) for edge in edges]
 
-        counts = 1. + 0.1 * rng.uniform(size=tuple(v.size for v in coords_values))
+        shape = tuple(v.size for v in coords_values)
+        counts = np.ones(shape)
+        counts += rng.uniform(size=shape[:1] + (1,) * (len(shape) - 1))  # add s-dependence
         mu = coords_values[1]
-        counts *= (1 + 0.2 * mu**2 + 0.2 * mu**4)  # add mu-dependence
+        coeff1, coeff2 = 0.1 * rng.uniform(size=2)
+        counts *= (1 + coeff1 * mu**2 + coeff2 * mu**4)  # add mu-dependence
         return Count2(counts=counts, norm=np.ones_like(counts), **{coord: value for coord, value in zip(coords, coords_values)},
                       **{f'{coord}_edges': value for coord, value in zip(coords, edges)}, coords=coords, attrs=dict(los='x'))
 
@@ -899,25 +905,117 @@ def test_window_correction():
             edges = count.edges('mu')
             poles = []
             for ell in ells:
-                tmp = np.diff(special.legendre(ell)(edges), axis=-1)
-                pole = (2 * ell + 1) / 2. * np.sum(count.values('count') * tmp, axis=-1)
-                pole = Count2Pole(counts=pole, norm=count.values('norm') * np.ones_like(pole), s=count.coords('s'), s_edges=edges, coords=['s'], ell=ell)
+                tmp = np.diff(special.legendre(ell).integ()(edges), axis=-1).T
+                pole = (2 * ell + 1) / 2. * np.sum(count.values('counts') * tmp, axis=-1)
+                pole = Count2Pole(counts=pole, norm=count.values('norm').mean(axis=-1) * np.ones_like(pole),
+                                  s=count.coords('s'), s_edges=count.edges('s'), coords=['s'], ell=ell)
                 poles.append(pole)
             return Count2Poles(poles)
 
-        correlation_poles = Count2Correlation(**{label: get_poles(count, ells=ells) for label, count in counts.items()})
+        correlation_poles = Count2Correlation(**{label: get_poles(count) for label, count in counts.items()})
         return correlation_mu, correlation_poles
 
     ells = [0, 2, 4]
-    correlation_mu, correlation_poles = get_correlations(seed=42, ells=ells)
+    correlation_mu, correlation_poles = get_correlations(seed=42, ells=np.arange(0, 10, 2))
     correlation_mu = correlation_mu.project(ells=ells)
-    ax = plt.gca()
+    correlation_poles = correlation_poles.project(ells=ells)
+
     for ill, ell in enumerate(ells):
-        pole = correlation_mu.get(ell)
-        ax.plot(s:=pole.coords('s'), pole.value(), color=color, linestyle='--')
-        pole = correlation_poles.get(ell)
-        ax.plot(s:=pole.coords('s'), pole.value(), color=color, linestyle='-')
-    plt.show()
+        pole_mu = correlation_mu.get(ell)
+        pole_poles = correlation_poles.get(ell)
+        assert np.allclose(pole_mu.value(), pole_poles.value(), rtol=1e-4, atol=1e-4)
+
+    if show:
+        from matplotlib import pyplot as plt
+        ax = plt.gca()
+        for ill, ell in enumerate(ells):
+            color = f'C{ill:d}'
+            pole = correlation_mu.get(ell)
+            ax.plot(pole.coords('s'), pole.value(), color=color, linestyle='--')
+            pole = correlation_poles.get(ell)
+            ax.plot(pole.coords('s'), pole.value(), color=color, linestyle='-')
+        plt.show()
+
+
+def test_window_correction_count3(show=False):
+    from lsstypes import Count3Pole, Count3Poles, Count3Correlation
+    from lsstypes.types import _build_edge_matrix3
+
+    def get_ells(ellmax):
+        return [
+            (ell, ellp, m)
+            for ell in range(ellmax + 1)
+            for ellp in range(ellmax + 1)
+            for m in range(min(ell, ellp) + 1)
+        ]
+
+    def get_poles_from_values(values, ells, s1, s2, s1_edges, s2_edges):
+        poles = []
+        for ill, ell in enumerate(ells):
+            poles.append(
+                Count3Pole(
+                    counts=values[ill],
+                    norm=np.ones_like(values[ill]),
+                    s1=s1,
+                    s2=s2,
+                    s1_edges=s1_edges,
+                    s2_edges=s2_edges,
+                    coords=["s1", "s2"],
+                    ell=ell,
+                )
+            )
+        return Count3Poles(poles)
+
+    rng = np.random.RandomState(seed=42)
+
+    ellmax = 3
+    ells = get_ells(ellmax)
+    target_ells = [(0, 0, 0), (1, 1, 0), (1, 1, 1), (2, 0, 0), (2, 2, 0), (2, 2, 1)]
+
+    s_edges_1d = np.linspace(0.0, 200.0, 11)
+    s_edges_1d = np.column_stack([s_edges_1d[:-1], s_edges_1d[1:]])
+    s = np.mean(s_edges_1d, axis=-1)
+    shape = (s.size, s.size)
+
+    # RRR_000, with s1/s2 dependence.
+    RRR0 = 10.0 + rng.uniform(size=shape)
+
+    # Build anisotropic random window multipoles RRRbar = RRR_ell / RRR_000.
+    RRRbar = {(0, 0, 0): np.ones_like(RRR0)}
+    for ell in ells:
+        if ell == (0, 0, 0):
+            continue
+        RRRbar[ell] = 0.05 * rng.normal(size=shape)
+
+    RRR_values = np.array([RRR0 * RRRbar[ell] for ell in ells])
+
+    # Input true zeta multipoles.
+    zeta_true = np.zeros((len(ells),) + shape)
+    for ill, ell in enumerate(ells):
+        if ell in target_ells:
+            zeta_true[ill] = 0.01 * rng.normal(size=shape)
+
+    # Forward model:
+    #   (DDD - RRR) / RRR_000 = W zeta
+    # where W is the edge/window matrix used by Count3Correlation.value().
+    W = _build_edge_matrix3(ellmax, RRRbar)
+    W = np.moveaxis(W, (0, 1), (-2, -1))
+    zeta_rhs = np.moveaxis(zeta_true, 0, -1)
+    num_over_RRR0 = np.einsum("...ab,...b->...a", W, zeta_rhs)
+    num_over_RRR0 = np.moveaxis(num_over_RRR0, -1, 0)
+
+    DDD_values = RRR_values + RRR0[None, ...] * num_over_RRR0
+
+    RRR = get_poles_from_values(RRR_values, ells, s, s, s_edges_1d, s_edges_1d)
+    DDD = get_poles_from_values(DDD_values, ells, s, s, s_edges_1d, s_edges_1d)
+
+    correlation = Count3Correlation(DDD=DDD, RRR=RRR, estimator="natural")
+    correlation = correlation.project(ells=target_ells)
+
+    for ell in target_ells:
+        pole = correlation.get(ell)
+        ill = ells.index(ell)
+        assert np.allclose(pole.value(), zeta_true[ill], rtol=1e-10, atol=1e-10)
 
 
 def test_select_reuses_mesh3_transform_signature():
@@ -1448,4 +1546,6 @@ if __name__ == '__main__':
     test_io()
     test_external()
     test_wrap()
+    test_window_correction_count2()
+    test_window_correction_count3()
     test_select_reuses_mesh3_transform_signature()
