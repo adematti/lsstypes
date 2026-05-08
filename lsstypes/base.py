@@ -534,8 +534,10 @@ def sparse_tensordot(matrix, tmp, axis):
     out : ndarray
         Same result as np.moveaxis(np.tensordot(matrix, tmp, axes=([1], [axis])), 0, axis).
     """
+    from numpy.lib.array_utils import normalize_axis_index
+
     tmp = np.asarray(tmp)
-    iaxis = np.core.numeric.normalize_axis_index(axis, tmp.ndim)
+    iaxis = normalize_axis_index(axis, tmp.ndim)
 
     if tmp.shape[iaxis] != matrix.shape[1]:
         raise ValueError(
