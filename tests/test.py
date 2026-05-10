@@ -951,7 +951,7 @@ def test_window_correction_count2(show=False):
 
 def test_window_correction_count3(show=False):
     from lsstypes import Count3Pole, Count3Poles, Count3Correlation
-    from lsstypes.types import _build_edge_matrix3, convert_ells
+    from lsstypes.types import build_edge_matrix3, convert_ells
 
     def get_ells(ellmax, basis="slepian"):
         ells = [
@@ -967,9 +967,12 @@ def test_window_correction_count3(show=False):
     def get_poles_from_values(values, ells, s1, s2, s1_edges, s2_edges, basis):
         poles = []
         for ill, ell in enumerate(ells):
-            poles.append(Count3Pole(counts=values[ill], norm=np.ones_like(values[ill]),
-                                    s1=s1, s2=s2, s1_edges=s1_edges, s2_edges=s2_edges,
-                                    coords=["s1", "s2"], ell=ell, basis=basis))
+            poles.append(
+                Count3Pole(
+                    counts=values[ill], norm=np.ones_like(values[ill]), s1=s1, s2=s2, s1_edges=s1_edges,
+                    s2_edges=s2_edges, coords=["s1", "s2"], ell=ell, basis=basis,
+                )
+            )
         return Count3Poles(poles)
 
     rng = np.random.RandomState(seed=42)
@@ -992,10 +995,8 @@ def test_window_correction_count3(show=False):
             else convert_ells(slepian_target_ells, basis_in="slepian", basis_out="sugiyama")
         )
 
-        # RRR_000, with s1/s2 dependence.
         RRR0 = 10.0 + rng.uniform(size=shape)
 
-        # Build anisotropic random window multipoles RRRbar = RRR_ell / RRR_000.
         RRRbar = {(0, 0, 0): np.ones_like(RRR0)}
         for ell in ells:
             if ell == (0, 0, 0):
@@ -1004,17 +1005,21 @@ def test_window_correction_count3(show=False):
 
         RRR_values = np.array([RRR0 * RRRbar[ell] for ell in ells])
 
-        # Input true zeta multipoles.
         zeta_true = np.zeros((len(ells),) + shape)
         for ill, ell in enumerate(ells):
             if ell in target_ells:
                 zeta_true[ill] = 0.01 * rng.normal(size=shape)
 
-        # Forward model:
-        #   (DDD - RRR) / RRR_000 = W zeta
-        # where W is the edge/window matrix used by Count3Correlation.value().
-        W = _build_edge_matrix3(ellmax, RRRbar, basis=basis)
+        # LS numerator:
+        #   DDD - DDR - DRD - RDD + DRR + RDR + RRD - RRR
+        # Set all mixed terms equal to RRR so this reduces to:
+        #   DDD - RRR
+        # Then:
+        #   LS numerator / RRR_000 = W zeta
+
+        W = build_edge_matrix3(ellmax, RRRbar, basis=basis)
         W = np.moveaxis(W, (0, 1), (-2, -1))
+
         zeta_rhs = np.moveaxis(zeta_true, 0, -1)
         num_over_RRR0 = np.einsum("...ab,...b->...a", W, zeta_rhs)
         num_over_RRR0 = np.moveaxis(num_over_RRR0, -1, 0)
@@ -1024,7 +1029,12 @@ def test_window_correction_count3(show=False):
         RRR = get_poles_from_values(RRR_values, ells, s, s, s_edges_1d, s_edges_1d, basis=basis)
         DDD = get_poles_from_values(DDD_values, ells, s, s, s_edges_1d, s_edges_1d, basis=basis)
 
-        correlation = Count3Correlation(DDD=DDD, RRR=RRR, estimator="natural")
+        DDR = DRD = RDD = DRR = RDR = RRD = RRR
+
+        correlation = Count3Correlation(
+            DDD=DDD, DDR=DDR, DRD=DRD, RDD=RDD, DRR=DRR, RDR=RDR, RRD=RRD, RRR=RRR, estimator="landyszalay",
+        )
+
         correlation = correlation.project(ells=target_ells)
 
         for ell in target_ells:

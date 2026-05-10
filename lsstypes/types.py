@@ -2714,9 +2714,6 @@ class Count3Correlation(LeafLikeObservableTree):
             count_names = ['DDD', 'RRR']
             if with_shifted: count_names += ['DDS', 'DSD', 'SDD', 'DSS', 'SDS', 'SSD', 'SSS']
             else: count_names += ['DDR', 'DRD', 'RDD', 'DRR', 'RDR', 'RRD']
-        elif estimator == 'natural':
-            count_names = ['DDD', 'RRR']
-            if with_shifted: count_names += ['SSS']
         else:
             import ast
 
@@ -2774,10 +2771,6 @@ class Count3Correlation(LeafLikeObservableTree):
             signs = {'DDD': 1., 'DDR': -1., 'DRD': -1., 'RDD': -1., 'DRR': 1., 'RDR': 1., 'RRD': 1., 'RRR': -1.}
             signs = {name.replace('R', scount_name): sign for name, sign in signs.items()}
             corr = sum(signs[name] * self.get(name).value() for name in signs)
-            value = divide_RRR(corr)
-        elif self.estimator == 'natural':
-            scount_name = 'S' if any('S' in name for name in self.count_names) else 'R'
-            corr = self.get('DDD').value() - self.get(scount_name * 3).value()
             value = divide_RRR(corr)
         else:
             raise NotImplementedError
