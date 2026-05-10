@@ -789,8 +789,14 @@ def test_types(show=False):
 
     correlation = get_correlation2poles()
     assert isinstance(correlation.project(), Count2CorrelationPoles)
+
+    poles2 = types.sum([correlation.get('DD')] * 2)
+    for name in ['counts', 'norm']:
+        assert np.allclose(poles2.get(ells=2).values(name), 2 * correlation.get(count_names='DD', ells=2).values(name))
+
     correlation2 = correlation + correlation
-    assert np.allclose(correlation2.get(count_names='DD', ells=2).values('counts'), 2 * correlation.get(count_names='DD', ells=2).values('counts'))
+    for name in ['counts', 'norm']:
+        assert np.allclose(correlation2.get(count_names='DD', ells=2).values(name), 2 * correlation.get(count_names='DD', ells=2).values(name))
 
     correlation = get_correlation2poles_jackknife()
     assert len(correlation.realizations) == 24
@@ -841,12 +847,18 @@ def test_types(show=False):
 
     correlation = get_correlation3poles()
 
+    poles2 = types.sum([correlation.get('DDD')] * 2)
+    for name in ['counts', 'norm']:
+        assert np.allclose(poles2.get(ells=(1, 1, 0)).values(name),
+                           2 * correlation.get(count_names='DDD', ells=(1, 1, 0)).values(name))
+
     # basic tree arithmetic / label propagation
     correlation2 = correlation + correlation
-    assert np.allclose(
-        correlation2.get(count_names='DDD', ells=(1, 1, 0)).values('counts'),
-        2. * correlation.get(count_names='DDD', ells=(1, 1, 0)).values('counts'),
-    )
+    for name in ['counts', 'norm']:
+        assert np.allclose(
+            correlation2.get(count_names='DDD', ells=(1, 1, 0)).values(name),
+            2. * correlation.get(count_names='DDD', ells=(1, 1, 0)).values(name),
+        )
 
     # value should be flattened over multipoles, then spatial bins
     value = correlation.value()
@@ -1553,6 +1565,69 @@ def test_io_speed():
     t0 = time.time()
     spectrum2 = types.read(fn)
     print(f'Readout time npy: {(time.time() - t0):.5f} s')
+
+
+def test():
+
+    """
+    def get_count():
+        s_edges = np.linspace(0., 100., 21)
+        s_edges = np.column_stack([s_edges[:-1], s_edges[1:]])
+        mu_edges = np.linspace(-1., 1., 11)
+        mu_edges = np.column_stack([mu_edges[:-1], mu_edges[1:]])
+        s, mu = np.mean(s_edges, axis=-1), np.mean(mu_edges, axis=-1)
+        rng = np.random.RandomState(seed=42)
+        counts = 1. + rng.uniform(size=(s.size, mu.size))
+        counts = Count2(counts=counts, norm=np.ones_like(counts), s=s, mu=mu, s_edges=s_edges, mu_edges=mu_edges, coords=['s', 'mu'], attrs=dict(los='x'))
+        return counts
+
+    counts = [get_count()] * 2
+    print(counts[0].values('counts').mean())
+    print(types.sum(counts).values('counts').mean())
+    """
+    def get_ells(ellmax=2):
+        return [
+            (ell, ellp, m)
+            for ell in range(ellmax + 1)
+            for ellp in range(ellmax + 1)
+            for m in range(min(ell, ellp) + 1)
+        ]
+
+
+    from lsstypes import Count3Pole, Count3Poles
+
+    def get_count3poles(seed=42, ellmax=2):
+        ells = get_ells(ellmax)
+
+        def get_count3pole(ell):
+            rng = np.random.RandomState(seed=seed + 100 * ell[0] + 10 * ell[1] + ell[2])
+
+            coords = ['s1', 's2']
+            edges = [
+                np.linspace(0., 200., 21),
+                np.linspace(0., 200., 21),
+            ]
+            edges = [np.column_stack([edge[:-1], edge[1:]]) for edge in edges]
+            coords_values = [np.mean(edge, axis=-1) for edge in edges]
+
+            shape = tuple(v.size for v in coords_values)
+            counts = 1. + rng.uniform(size=shape)
+            norm = np.ones_like(counts)
+
+            return Count3Pole(counts=counts, norm=norm, s1=coords_values[0], s2=coords_values[1],
+                              s1_edges=edges[0], s2_edges=edges[1], coords=coords, ell=ell, attrs=dict(los='x'))
+
+        return Count3Poles([get_count3pole(ell) for ell in ells])
+
+    counts = [get_count3poles()] * 2
+    ell = (0, 0, 0)
+    print(counts[0].get(ell).values('norm').mean())
+
+    from lsstypes import tree_map
+    tmp = tree_map(lambda observables: observables[0]._average(observables, weights=None), counts, level=1, is_leaf='input_not_leaf')
+    print(tmp.get(ell).values('norm').mean())
+    print(types.sum(counts).get(ell).values('norm').mean())
+
 
 
 

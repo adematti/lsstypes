@@ -2674,7 +2674,9 @@ class LeafLikeObservableTree(ObservableTree):
                 # pass (list of) LeafLikeObservableTree as argument
                 return _sumweight(observables, name, weights=weights)
         else:
-            sumweight = weights
+            sumweight = getattr(observables[0]._branches[0].__class__, '_sumweight', None)
+            if sumweight is not None: sumweight = partial(sumweight, weights=weights)
+            else: sumweight = weights
         return cls._average(observables, weights=sumweight)
 
     @classmethod
@@ -2686,6 +2688,8 @@ class LeafLikeObservableTree(ObservableTree):
             def meanweight(_, name):
                 # pass (list of) LeafLikeObservableTree as argument
                 return _meanweight(observables, name)
+        else:
+            meanweight = getattr(observables[0]._branches[0].__class__, '_meanweight', None)
         return cls._average(observables, weights=meanweight)
 
 
