@@ -757,7 +757,7 @@ def test_types(show=False):
     covariance.plot(show=show)
 
     for mode in ['rppi', 'theta']:
-        correlation = get_correlation_jackknife(mode='rppi')
+        correlation = get_correlation_jackknife(mode=mode)
         value, covariance = correlation.project(kw_covariance=dict())
         if mode != 'theta': value.plot(show=show)
         covariance.plot(show=show)
@@ -836,7 +836,10 @@ def test_types(show=False):
         return Count3Correlation(**counts)
 
     correlation = get_correlation3()
-    types.mean([correlation.project()] * 3)
+    correlation_binned = correlation.project()
+    assert list(correlation_binned.ravel().coords()) == ['theta']
+    types.mean([correlation_binned] * 3)
+    types.cov([correlation_binned] * 3)
 
     def get_ells(ellmax=2):
         return [

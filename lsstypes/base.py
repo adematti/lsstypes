@@ -1161,7 +1161,7 @@ class ObservableLeaf(object):
         """Covariance matrix of multiple observables."""
         assert len(observables) >= 1, 'Provide at least 2 observables to compute the covariance'
         mean = cls.mean(observables)
-        value = np.cov([observable.value() for observable in observables], rowvar=False, ddof=1)
+        value = np.cov([np.ravel(observable.value()) for observable in observables], rowvar=False, ddof=1)
         return CovarianceMatrix(value, observable=mean)
 
     @classmethod
