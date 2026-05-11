@@ -7,6 +7,8 @@ import numpy as np
 import lsstypes as types
 from lsstypes import ObservableLeaf, ObservableTree, read, write
 from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole, Mesh3SpectrumPoles, Mesh2CorrelationPole, Mesh2CorrelationPoles, Mesh3CorrelationPole, Mesh3CorrelationPoles, Count2, Count2Jackknife, Count2Correlation, Count2JackknifeCorrelation
+from lsstypes import Count2Pole, Count2Poles, Count2CorrelationPoles, Count2PolesJackknife
+from lsstypes import Count3, Count3Pole, Count3Poles, Count3Correlation, Count3CorrelationPoles
 from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood, ObservableLike
 
 
@@ -591,6 +593,9 @@ def test_types(show=False):
         if mode == 'rppi':
             coords = ['rp', 'pi']
             edges = [np.linspace(0., 200., 51), np.linspace(-20., 20., 101)]
+        if mode == 'theta':
+            coords = ['theta']
+            edges = [np.linspace(0., 20., 21)]
 
         edges = [np.column_stack([edge[:-1], edge[1:]]) for edge in edges]
         coords_values = [np.mean(edge, axis=-1) for edge in edges]
@@ -751,12 +756,11 @@ def test_types(show=False):
     value.plot(show=show)
     covariance.plot(show=show)
 
-    correlation = get_correlation_jackknife(mode='rppi')
-    value, covariance = correlation.project(kw_covariance=dict())
-    value.plot(show=show)
-    covariance.plot(show=show)
-
-    from lsstypes import Count2Pole, Count2Poles, Count2CorrelationPoles, Count2PolesJackknife
+    for mode in ['rppi', 'theta']:
+        correlation = get_correlation_jackknife(mode='rppi')
+        value, covariance = correlation.project(kw_covariance=dict())
+        if mode != 'theta': value.plot(show=show)
+        covariance.plot(show=show)
 
     def get_count2poles(seed=42):
         ells = [0, 2, 4]
@@ -807,7 +811,32 @@ def test_types(show=False):
     correlation_no_jackknife = correlation.value(return_type=None)
     assert type(correlation_no_jackknife.get('DD')) is Count2Poles
 
-    from lsstypes import Count3Pole, Count3Poles, Count3Correlation, Count3CorrelationPoles
+    def get_count3(seed=42):
+
+        rng = np.random.RandomState(seed=seed)
+
+        coords = ['theta1', 'theta2']
+        edges = [
+            np.linspace(0., 20., 21),
+            np.linspace(0., 20., 21),
+        ]
+        edges = [np.column_stack([edge[:-1], edge[1:]]) for edge in edges]
+        coords_values = [np.mean(edge, axis=-1) for edge in edges]
+
+        shape = tuple(v.size for v in coords_values)
+        counts = 1. + rng.uniform(size=shape)
+        norm = np.ones_like(counts)
+
+        return Count3(counts=counts, norm=norm, theta1=coords_values[0], theta2=coords_values[1],
+                            theta1_edges=edges[0], theta2_edges=edges[1], coords=coords, attrs=dict(los='x'))
+
+    def get_correlation3(seed=42):
+        labels = ['DDD', 'DDR', 'DRD', 'RDD', 'DRR', 'RDR', 'RRD', 'RRR']
+        counts = {label: get_count3(seed=seed + i) for i, label in enumerate(labels)}
+        return Count3Correlation(**counts)
+
+    correlation = get_correlation3()
+    types.mean([correlation.project()] * 3)
 
     def get_ells(ellmax=2):
         return [

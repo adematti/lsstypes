@@ -1218,7 +1218,7 @@ def _get_project_mode(estimator, mode=None, **kwargs):
         elif list(estimator.coords()) == ['rp', 'pi']:
             mode = 'wp'
         else:
-            mode = None
+            mode = 'binned'
             if isinstance(estimator.get(estimator.count_names[0]), Count2Poles):
                 mode = 'poles'
     else:
@@ -1541,7 +1541,7 @@ class Count2Correlation(LeafLikeObservableTree):
                 poles = []
                 for ill, ell in zip(ills, ells):
                     pole = Count2CorrelationPole(**coords, **edges, value=value[ill], RR0=RR0.value(),
-                                                    norm=norm, ell=ell, attrs=self.attrs, **kwargs)
+                                                    norm=norm, ell=ell, attrs=self.attrs)
                     poles.append(pole)
                 return Count2CorrelationPoles(poles)
             return _project_to_poles(self, **kwargs)
@@ -1549,6 +1549,12 @@ class Count2Correlation(LeafLikeObservableTree):
             return _project_to_wedges(self, **kwargs)
         if mode == 'wp':
             return _project_to_wp(self, **kwargs)
+        elif mode == 'binned':
+            norm = self.get('DD').values('norm')
+            coords = self.coords()
+            edges = {_edges_name(axis): edges for axis, edges in self.edges().items()}
+            return Count2CorrelationBinned(**coords, **edges, value=value, RR0=self.get('RR').value(),
+                                           norm=norm, attrs=self.attrs, coords=list(coords))
         raise NotImplementedError(f'could not project correlation function with {mode}')
 
     @classmethod
@@ -2091,30 +2097,26 @@ def _project_to_wp(estimator, ignore_nan=False):
 
 
 @register_type
-class Count2CorrelationPole(ObservableLeaf):
+class Count2CorrelationBinned(ObservableLeaf):
     r"""
-    Container for a correlation function multipole :math:`\xi_\ell(s)`.
-
-    Stores the binned correlation function for a given multipole order :math:`\ell`, including normalization and RR pair counts.
+    Container for a correlation function without :class:`Count2` leaves.
+    Stores the binned correlation function, including normalization and RR pair counts.
 
     Parameters
     ----------
-    s : array-like
-        Bin centers for separation :math:`s`.
-    s_edges : array-like
-        Bin edges for separation :math:`s`.
     value : array-like
-        Correlation function multipole values for each bin.
+        Correlation function value for each bin.
     RR0 : array-like, optional
-        (Isotropic-average of) RR (random-random) pair counts for each bin (default: ones).
+        RR (random-random) pair counts for each bin (default: ones).
     norm : array-like, optional
         Normalization factor (default: ones).
-    ell : int, optional
-        Multipole order :math:`\ell`.
     attrs : dict, optional
         Additional attributes.
+    kwargs : dict
+        Additional keyword arguments for initialization.
+        Notably, "coords".
     """
-    _name = 'count2_correlation_pole'
+    _name = 'count2_correlation_binned'
 
     def __init__(self, s=None, s_edges=None, value=None, RR0=None, norm=None, ell=None, attrs=None, **kwargs):
         if RR0 is None: RR0 = my_ones_like(value)
@@ -2122,6 +2124,15 @@ class Count2CorrelationPole(ObservableLeaf):
         super().__init__(s=s, s_edges=s_edges, value=value, RR0=RR0, norm=norm, coords=['s'], attrs=attrs)
         if ell is not None:
             self._meta['ell'] = ell
+
+    def __init__(self, value=None, RR0=None, norm=None, attrs=None, **kwargs):
+        self.__pre_init__(attrs=attrs, **kwargs)
+        if RR0 is None: RR0 = my_ones_like(value)
+        if norm is None: norm = my_ones_like(value)
+        self._values_names = ['value', 'RR0', 'norm']
+        self._update(value=value, RR0=RR0, norm=norm)
+        _check_data_names(self)
+        _check_data_shapes(self)
 
     def _update(self, **kwargs):
         super()._update(**kwargs)
@@ -2155,6 +2166,38 @@ class Count2CorrelationPole(ObservableLeaf):
                 return [weight / sumweights for weight in weights]
             return [1] * len(observables)  # just sum norm
         raise ValueError(f'{name} weights not implemented')
+
+
+@register_type
+class Count2CorrelationPole(Count2CorrelationBinned):
+    r"""
+    Container for a correlation function multipole :math:`\xi_\ell(s)`.
+
+    Stores the binned correlation function for a given multipole order :math:`\ell`, including normalization and RR pair counts.
+
+    Parameters
+    ----------
+    s : array-like
+        Bin centers for separation :math:`s`.
+    s_edges : array-like
+        Bin edges for separation :math:`s`.
+    value : array-like
+        Correlation function multipole values for each bin.
+    RR0 : array-like, optional
+        (Isotropic-average of) RR (random-random) pair counts for each bin (default: ones).
+    norm : array-like, optional
+        Normalization factor (default: ones).
+    ell : int, optional
+        Multipole order :math:`\ell`.
+    attrs : dict, optional
+        Additional attributes.
+    """
+    _name = 'count2_correlation_pole'
+
+    def __init__(self, s=None, s_edges=None, value=None, RR0=None, norm=None, ell=None, attrs=None):
+        super().__init__(s=s, s_edges=s_edges, value=value, RR0=RR0, norm=norm, attrs=attrs, coords=['s'])
+        if ell is not None:
+            self._meta['ell'] = ell
 
     def _plabel(self, name):
         if name == 's':
@@ -2254,7 +2297,7 @@ class Count2CorrelationPoles(ObservableTree):
 
 
 @register_type
-class Count2CorrelationWedge(ObservableLeaf):
+class Count2CorrelationWedge(Count2CorrelationBinned):
     r"""
     Container for a correlation function wedge :math:`\xi_(s, \mu)`.
 
@@ -2280,26 +2323,11 @@ class Count2CorrelationWedge(ObservableLeaf):
     _name = 'count2_correlation_wedge'
 
     def __init__(self, s=None, s_edges=None, mu_edges=None, value=None, RR0=None, norm=None, attrs=None):
-        if RR0 is None: RR0 = my_ones_like(value)
-        if norm is None: norm = my_ones_like(value)
-        super().__init__(s=s, s_edges=s_edges, value=value, RR0=RR0, norm=norm, coords=['s'], attrs=attrs)
+        super().__init__(s=s, s_edges=s_edges, value=value, RR0=RR0, norm=norm, attrs=attrs, coords=['s'])
         if mu_edges is not None:
             mu_edges = np.array(mu_edges)
             assert mu_edges.size == 2
             self._meta['mu_edges'] = mu_edges
-
-    def _update(self, **kwargs):
-        super()._update(**kwargs)
-        if 'norm' in kwargs:
-            self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
-
-    def _binweight(self, name=None):
-        # weight, normalized
-        return Count2CorrelationPole._binweight(self, name=name)
-
-    @classmethod
-    def _sumweight(cls, observables, name=None, weights=None):
-        return Count2CorrelationPole._sumweight(observables, name=name, weights=weights)
 
     def _plabel(self, name):
         if name == 's':
@@ -2404,7 +2432,7 @@ class Count2CorrelationWedges(ObservableTree):
 
 
 @register_type
-class Count2CorrelationWp(ObservableLeaf):
+class Count2CorrelationWp(Count2CorrelationBinned):
     r"""
     Container for the projected correlation function :math:`w_p`.
 
@@ -2412,10 +2440,10 @@ class Count2CorrelationWp(ObservableLeaf):
 
     Parameters
     ----------
-    s : array-like
-        Bin centers for separation :math:`s`.
-    s_edges : array-like
-        Bin edges for separation :math:`s`.
+    rp : array-like
+        Bin centers for transverse separation :math:`r_p`.
+    rp_edges : array-like
+        Bin edges for transverse separation :math:`r_p`.
     value : array-like
         Correlation function values for each bin.
     RR0 : array-like, optional
@@ -2430,26 +2458,11 @@ class Count2CorrelationWp(ObservableLeaf):
     _name = 'count2_correlation_wp'
 
     def __init__(self, rp=None, rp_edges=None, pi_edges=None, value=None, RR0=None, norm=None, attrs=None):
-        if RR0 is None: RR0 = my_ones_like(value)
-        if norm is None: norm = my_ones_like(value)
         super().__init__(rp=rp, rp_edges=rp_edges, value=value, RR0=RR0, norm=norm, coords=['rp'], attrs=attrs)
         if pi_edges is not None:
             pi_edges = np.array(pi_edges)
             assert pi_edges.size == 2
             self._meta['pi_edges'] = pi_edges
-
-    def _update(self, **kwargs):
-        super()._update(**kwargs)
-        if 'norm' in kwargs:
-            self._data['norm'] =  self._data['norm'] * my_ones_like(self._data['value'])
-
-    def _binweight(self, name=None):
-        # weight, normalized
-        return Count2CorrelationPole._binweight(self, name=name)
-
-    @classmethod
-    def _sumweight(cls, observables, name=None, weights=None):
-        return Count2CorrelationPole._sumweight(observables, name=name, weights=weights)
 
     def _plabel(self, name):
         if name == 'rp':
@@ -2487,7 +2500,6 @@ class Count2CorrelationWp(ObservableLeaf):
             ax = fig.axes[0]
         ax.plot(self.rp, self.rp * self.value())
         return fig
-
 
 
 @register_type
@@ -2823,7 +2835,11 @@ class Count3Correlation(LeafLikeObservableTree):
                 poles.append(pole)
             return Count3CorrelationPoles(poles)
         else:
-            raise NotImplementedError
+            norm = self.get('DDD').values('norm')
+            coords = self.coords()
+            edges = {_edges_name(axis): edges for axis, edges in self.edges().items()}
+            return Count3CorrelationBinned(**coords, **edges, value=value, RRR0=self.get('RRR').value(),
+                                           norm=norm, attrs=self.attrs, coords=list(coords))
 
     def ravel(self):
         return self.map(lambda leaf: leaf.ravel())
@@ -2867,59 +2883,36 @@ class Count3Correlation(LeafLikeObservableTree):
         raise NotImplementedError('mean not defined')
 
 
-@register_type
-class Count3CorrelationPole(ObservableLeaf):
-    r"""
-    Container for a 3pt correlation function multipole :math:`\zeta`.
 
-    Stores the binned correlation function for a given multipole order :math:`\ell`, including normalization and RRR counts.
+@register_type
+class Count3CorrelationBinned(ObservableLeaf):
+    r"""
+    Container for a 3pt correlation function :math:`\zeta`, including normalization and RRR counts.
 
     Parameters
     ----------
-    s : array-like
-        Bin centers for separation :math:`s`.
-    s_edges : array-like
-        Bin edges for separation :math:`s`.
     value : array-like
-        Correlation function multipole values for each bin.
+        Correlation function value for each bin.
     RRR0 : array-like, optional
-        (Isotropic-average of) RRR (random-random-random) triplet counts for each bin (default: ones).
+        RRR (random-random-random) counts for each bin (default: ones).
     norm : array-like, optional
         Normalization factor (default: ones).
-    ell : int, optional
-        Multipole order :math:`\ell`.
     attrs : dict, optional
         Additional attributes.
+    kwargs : dict
+        Additional keyword arguments for initialization.
+        Notably, "coords".
     """
-    _name = 'count3_correlation_pole'
+    _name = 'count3_correlation_binned'
 
-class Count3CorrelationPole(ObservableLeaf):
-    _name = 'count3_correlation_pole'
-
-    def __init__(self, s=None, s_edges=None, value=None, RRR0=None, norm=None,
-                 ell=None, attrs=None, basis='slepian', **kwargs):
-
-        if RRR0 is None:
-            RRR0 = my_ones_like(value)
-        if norm is None:
-            norm = my_ones_like(value)
-
-        kw = dict(s=s, s_edges=s_edges)
-        if s_edges is None:
-            kw.pop('s_edges')
-
-        coords = ['s']
-        if isinstance(s, tuple):
-            kw = {f's{idim + 1:d}': coord for idim, coord in enumerate(s)}
-            coords = list(kw)
-            if s_edges is not None:
-                kw.update({f's{idim + 1:d}_edges': edge for idim, edge in enumerate(s_edges)})
-
-        super().__init__(**kw, value=value, RRR0=RRR0, norm=norm, coords=coords, attrs=attrs, **kwargs)
-
-        if ell is not None:
-            self._meta['ell'] = tuple(ell)
-        self._meta['basis'] = basis
+    def __init__(self, value=None, RRR0=None, norm=None, attrs=None, **kwargs):
+        self.__pre_init__(attrs=attrs, **kwargs)
+        if RRR0 is None: RRR0 = my_ones_like(value)
+        if norm is None: norm = my_ones_like(value)
+        self._values_names = ['value', 'RRR0', 'norm']
+        self._update(value=value, RRR0=RRR0, norm=norm)
+        _check_data_names(self)
+        _check_data_shapes(self)
 
     def _update(self, **kwargs):
         super()._update(**kwargs)
@@ -2959,12 +2952,55 @@ class Count3CorrelationPole(ObservableLeaf):
         return len(self._coords_names) == 1
 
     def unravel(self):
-        """Unravel the coordinate axis 's' into 's1', 's2' (and 's3')."""
+        """Unravel the coordinate axis, e.g. 's' into 's1', 's2' (and 's3')."""
         return Count3.unravel(self)
 
     def ravel(self):
-        """Ravel the coordinate axes into a single axis 's'."""
+        """Ravel the coordinate axes into a single axis, e.g. 's'."""
         return Count3.ravel(self)
+
+
+@register_type
+class Count3CorrelationPole(Count3CorrelationBinned):
+    r"""
+    Container for a 3pt correlation function multipole :math:`\zeta`.
+
+    Stores the binned correlation function for a given multipole order :math:`\ell`, including normalization and RRR counts.
+
+    Parameters
+    ----------
+    s : array-like
+        Bin centers for separation :math:`s`.
+    s_edges : array-like
+        Bin edges for separation :math:`s`.
+    value : array-like
+        Correlation function multipole values for each bin.
+    RRR0 : array-like, optional
+        (Isotropic-average of) RRR (random-random-random) triplet counts for each bin (default: ones).
+    norm : array-like, optional
+        Normalization factor (default: ones).
+    ell : int, optional
+        Multipole order :math:`\ell`.
+    attrs : dict, optional
+        Additional attributes.
+    """
+    _name = 'count3_correlation_pole'
+
+    def __init__(self, s=None, s_edges=None, value=None, RRR0=None, norm=None,
+                 ell=None, attrs=None, basis='slepian', **kwargs):
+        kw = dict(s=s, s_edges=s_edges)
+        if s_edges is None:
+            kw.pop('s_edges')
+        coords = ['s']
+        if isinstance(s, tuple):
+            kw = {f's{idim + 1:d}': coord for idim, coord in enumerate(s)}
+            coords = list(kw)
+            if s_edges is not None:
+                kw.update({f's{idim + 1:d}_edges': edge for idim, edge in enumerate(s_edges)})
+        super().__init__(**kw, value=value, RRR0=RRR0, norm=norm, coords=coords, attrs=attrs, **kwargs)
+        if ell is not None:
+            self._meta['ell'] = tuple(ell)
+        self._meta['basis'] = basis
 
     def _plabel(self, name):
         if name == 's':
