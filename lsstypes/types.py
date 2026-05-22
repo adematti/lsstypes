@@ -494,11 +494,12 @@ class Mesh3SpectrumPole(ObservableLeaf):
             arrays = np.meshgrid(*arrays, indexing='ij')
             return np.column_stack([array.ravel() for array in arrays])
 
-        new._data[axis[:1]] = product(*coords)
+        axis = self._coords_names[0][:-1]
+        new._data[axis] = product(*coords)
         if edges:
             edges = [product(*[edge[..., i] for edge in edges]) for i in [0, 1]]
-            new._data[_edges_name(f'{axis[:1]}')] = np.concatenate([edge[..., None] for edge in edges], axis=-1)
-        new._coords_names = [axis[:1]]
+            new._data[_edges_name(axis)] = np.concatenate([edge[..., None] for edge in edges], axis=-1)
+        new._coords_names = [axis]
         for name in self._values_names:
             new._data[name] = self._data[name].ravel()
         return new
@@ -1549,11 +1550,11 @@ class Count2Correlation(LeafLikeObservableTree):
             return _project_to_wedges(self, **kwargs)
         if mode == 'wp':
             return _project_to_wp(self, **kwargs)
-        elif mode == 'binned':
+        if mode == 'binned':
             norm = self.get('DD').values('norm')
             coords = self.coords()
             edges = {_edges_name(axis): edges for axis, edges in self.edges().items()}
-            return Count2CorrelationBinned(**coords, **edges, value=value, RR0=self.get('RR').value(),
+            return Count2CorrelationBinned(**coords, **edges, value=self.value(), RR0=self.get('RR').value(),
                                            norm=norm, attrs=self.attrs, coords=list(coords))
         raise NotImplementedError(f'could not project correlation function with {mode}')
 
@@ -2571,11 +2572,12 @@ class Count3(Count2):
             arrays = np.meshgrid(*arrays, indexing='ij')
             return np.column_stack([array.ravel() for array in arrays])
 
-        new._data[axis[:1]] = product(*coords)
+        axis = self._coords_names[0][:-1]
+        new._data[axis] = product(*coords)
         if edges:
             edges = [product(*[edge[..., i] for edge in edges]) for i in [0, 1]]
-            new._data[_edges_name(f'{axis[:1]}')] = np.concatenate([edge[..., None] for edge in edges], axis=-1)
-        new._coords_names = [axis[:1]]
+            new._data[_edges_name(axis)] = np.concatenate([edge[..., None] for edge in edges], axis=-1)
+        new._coords_names = [axis]
         for name in self._values_names:
             new._data[name] = self._data[name].ravel()
         return new
