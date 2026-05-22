@@ -110,6 +110,14 @@ def test_tree():
     DD = tree.get('DD').match(RR)
     assert DD.shape == RR.shape
     assert np.allclose(DD.mu, RR.mu)
+    RR2 = tree.get('RR')
+    DD2 = DD.match(RR2)
+    assert np.allclose(DD2.edges('mu'), RR2.edges('mu'))
+    mask = np.isin(DD2.edges('mu')[..., 0], DD.edges('mu')[..., 0])
+    assert np.allclose(DD2.value()[..., mask], DD.value())
+    assert np.allclose(DD2.value()[..., ~mask], 0.)
+    assert np.allclose(DD2.coords('mu')[mask], DD.coords('mu'))
+    assert np.allclose(DD2.coords('mu')[~mask], 0.)
     tree2 = tree.clone(value=np.zeros(tree.size))
     assert np.allclose(tree2.value(), 0.)
 
@@ -341,6 +349,15 @@ def test_matrix(show=False):
 
         matrix2 = matrix.at.observable.get([0, 2])
         assert matrix2.shape[0] == matrix.shape[0] * 2 // 3
+
+        if hasattr(matrix, 'theory'):
+            matrix2 = matrix.at.theory.select(k=slice(0, 5, 1))
+            matrix3 = matrix2.at.theory.match(matrix.theory)
+            assert matrix3.shape[1] == matrix.shape[1]
+
+            assert matrix3.theory.size == matrix3.shape[1]
+            assert np.allclose(matrix3.value()[:, :5], matrix.value()[:, :5])
+            assert np.allclose(matrix3.value()[:, 5:matrix2.theory.get(0).size], 0.)
 
     test(winmat)
     winmat.plot_slice(indices=2, show=show)
@@ -1594,70 +1611,6 @@ def test_io_speed():
     t0 = time.time()
     spectrum2 = types.read(fn)
     print(f'Readout time npy: {(time.time() - t0):.5f} s')
-
-
-def test():
-
-    """
-    def get_count():
-        s_edges = np.linspace(0., 100., 21)
-        s_edges = np.column_stack([s_edges[:-1], s_edges[1:]])
-        mu_edges = np.linspace(-1., 1., 11)
-        mu_edges = np.column_stack([mu_edges[:-1], mu_edges[1:]])
-        s, mu = np.mean(s_edges, axis=-1), np.mean(mu_edges, axis=-1)
-        rng = np.random.RandomState(seed=42)
-        counts = 1. + rng.uniform(size=(s.size, mu.size))
-        counts = Count2(counts=counts, norm=np.ones_like(counts), s=s, mu=mu, s_edges=s_edges, mu_edges=mu_edges, coords=['s', 'mu'], attrs=dict(los='x'))
-        return counts
-
-    counts = [get_count()] * 2
-    print(counts[0].values('counts').mean())
-    print(types.sum(counts).values('counts').mean())
-    """
-    def get_ells(ellmax=2):
-        return [
-            (ell, ellp, m)
-            for ell in range(ellmax + 1)
-            for ellp in range(ellmax + 1)
-            for m in range(min(ell, ellp) + 1)
-        ]
-
-
-    from lsstypes import Count3Pole, Count3Poles
-
-    def get_count3poles(seed=42, ellmax=2):
-        ells = get_ells(ellmax)
-
-        def get_count3pole(ell):
-            rng = np.random.RandomState(seed=seed + 100 * ell[0] + 10 * ell[1] + ell[2])
-
-            coords = ['s1', 's2']
-            edges = [
-                np.linspace(0., 200., 21),
-                np.linspace(0., 200., 21),
-            ]
-            edges = [np.column_stack([edge[:-1], edge[1:]]) for edge in edges]
-            coords_values = [np.mean(edge, axis=-1) for edge in edges]
-
-            shape = tuple(v.size for v in coords_values)
-            counts = 1. + rng.uniform(size=shape)
-            norm = np.ones_like(counts)
-
-            return Count3Pole(counts=counts, norm=norm, s1=coords_values[0], s2=coords_values[1],
-                              s1_edges=edges[0], s2_edges=edges[1], coords=coords, ell=ell, attrs=dict(los='x'))
-
-        return Count3Poles([get_count3pole(ell) for ell in ells])
-
-    counts = [get_count3poles()] * 2
-    ell = (0, 0, 0)
-    print(counts[0].get(ell).values('norm').mean())
-
-    from lsstypes import tree_map
-    tmp = tree_map(lambda observables: observables[0]._average(observables, weights=None), counts, level=1, is_leaf='input_not_leaf')
-    print(tmp.get(ell).values('norm').mean())
-    print(types.sum(counts).get(ell).values('norm').mean())
-
-
 
 
 if __name__ == '__main__':

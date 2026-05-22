@@ -920,6 +920,7 @@ class ObservableLeaf(object):
         except ImportError:
             sp = None
 
+        # Add extra dimension (raveled coordinates)
         edges_ = edges[:, None, :] if edges.ndim == 2 else edges
         self_edges_ = self_edges[:, None, :] if self_edges.ndim == 2 else self_edges
         tol_ = tol[:, None] if tol.ndim == 1 else tol
@@ -944,7 +945,7 @@ class ObservableLeaf(object):
             from scipy import sparse
             mask = sparse.csr_matrix((np.ones(rows.size, dtype='?'), (rows, cols)), shape=(edges_.shape[0], self_edges_.shape[0]))
 
-        if mask.sum(axis=-1).max() == 1:  # 0 or 1 True: a simple selection!
+        if np.all(mask.sum(axis=-1) == 1):  # 1 True: a simple selection!
             index, index_self = np.nonzero(mask)
             index_self = index_self[np.argsort(index)]
             if return_edges:
