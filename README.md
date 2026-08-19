@@ -9,7 +9,10 @@ Structured data types designed for large-scale structure (LSS) measurements, wit
 - **Hierarchical data structure** — organize complex LSS data using tree-like structures.
 - **Coordinate-based selection and rebinning** — easily filter and rebin data subsets based on spatial or other dimensions.
 - **Flexible storage** — seamlessly read from and write to:
-  - **HDF5** (via `h5py`) — for efficient binary data handling.
+  - **HDF5** (via `h5py`) — for efficient binary data handling, and for sharing files across environments.
+  - **Pickle** (`.pkl`, `.pickle`) — same content as HDF5, read as a single stream, hence orders of magnitude
+    faster for observables holding many arrays. Best suited to local files and caches: unpickling executes
+    arbitrary code, so only read files you trust, and a file written with `numpy` 2.x will not load under 1.x.
   - **Plain text** — for easy inspection and interoperability.
 
 

@@ -155,7 +155,7 @@ def _txt_recursively_read_dict(path='/'):
 
 def _write(filename, state, overwrite=True, **kwargs):
     """
-    Write a state dictionary to disk in HDF5 or text format.
+    Write a state dictionary to disk in HDF5, pickle or text format.
 
     Parameters
     ----------
@@ -165,8 +165,10 @@ def _write(filename, state, overwrite=True, **kwargs):
         State dictionary to write.
     overwrite : bool, optional
         If True, overwrite existing file.
+        With pickle, which cannot append, an existing file is left untouched
+        and :class:`FileExistsError` raised.
     kwargs : dict
-        Optional arguments for :class:`h5py.File`.
+        Optional arguments for :class:`h5py.File`, or :func:`pickle.dump` (e.g. ``protocol``).
     """
     filename = str(filename)
     utils.mkdir(os.path.dirname(filename))
@@ -174,7 +176,11 @@ def _write(filename, state, overwrite=True, **kwargs):
         import h5py
         with h5py.File(filename, 'w' if overwrite else 'a', **kwargs) as f:
             _h5py_recursively_write_dict(f, '/', state)
-    elif any(filename.endswith(ext) for ext in ['txt']):
+    elif any(filename.endswith(ext) for ext in ['.pkl', '.pickle']):
+        import pickle
+        with open(filename, 'wb' if overwrite else 'xb') as f:
+            pickle.dump(state, f, **kwargs)
+    elif any(filename.endswith(ext) for ext in ['.txt']):
         if overwrite:
             shutil.rmtree(filename[:-4], ignore_errors=True)
         _txt_recursively_write_dict(filename[:-4], state)
@@ -184,7 +190,11 @@ def _write(filename, state, overwrite=True, **kwargs):
 
 def _read(filename):
     """
-    Read a state dictionary from disk in HDF5 or text format.
+    Read a state dictionary from disk in HDF5, pickle or text format.
+
+    Warning
+    -------
+    Unpickling executes arbitrary code: only read pickle files you trust.
 
     Parameters
     ----------
@@ -201,6 +211,10 @@ def _read(filename):
         import h5py
         with h5py.File(filename, 'r') as f:
             dic = _h5py_recursively_read_dict(f, '/')
+    elif any(filename.endswith(ext) for ext in ['.pkl', '.pickle']):
+        import pickle
+        with open(filename, 'rb') as f:
+            dic = pickle.load(f)
     elif any(filename.endswith(ext) for ext in ['.txt']):
         dic = _txt_recursively_read_dict(filename[:-4])
     else:
@@ -242,12 +256,14 @@ def write(filename, observable, **kwargs):
     """
     Write observable to disk.
 
+    The file format is set by the extension: '.h5' / '.hdf5', '.pkl' / '.pickle', or '.txt'.
+
     Parameters
     ----------
     filename : str
         Output file name.
     kwargs : dict
-        Optional arguments for :class:`h5py.File`.
+        Optional arguments for :class:`h5py.File`, or :func:`pickle.dump` (e.g. ``protocol``).
     """
     from lsstypes import __version__
 
@@ -268,6 +284,12 @@ def write(filename, observable, **kwargs):
 def read(filename):
     """
     Read observable from disk.
+
+    The file format is set by the extension: '.h5' / '.hdf5', '.pkl' / '.pickle', or '.txt'.
+
+    Warning
+    -------
+    Unpickling executes arbitrary code: only read pickle files you trust.
 
     Parameters
     ----------

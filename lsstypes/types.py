@@ -1894,7 +1894,7 @@ def _window_matrix_RR(counts, sedges, muedges, out_sedges, ells=(0, 2, 4), out_e
     return sin, edgesin, full_matrix
 
 
-def compute_RR2_window(RR, edges=None, ells=(0, 2, 4), ellsin=(0, 2, 4), kind='RR/RR', resolution=1):
+def compute_RR2_window(RR, edges=None, ells=(0, 2, 4), ellsin=(0, 2, 4), kind='RR/RR', norm=1., resolution=1):
     r"""
     Compute the window matrix from RR pair counts.
 
@@ -1911,6 +1911,8 @@ def compute_RR2_window(RR, edges=None, ells=(0, 2, 4), ellsin=(0, 2, 4), kind='R
         'RR/RR', apply weights from RR pair counts both in numerator and denominator
         (such that the window matrix is essentially a rebinning matrix).
         'RR', apply weights from RR pair counts only in numerator.
+    norm : array-like, optional
+        Normalization factor (default: ones).
     resolution : int, optional
         Number of evaluation points per ``sedges`` bin for the integral (higher values yield more accurate integration).
 
@@ -1924,7 +1926,10 @@ def compute_RR2_window(RR, edges=None, ells=(0, 2, 4), ellsin=(0, 2, 4), kind='R
     sin, edgesin, window = _window_matrix_RR(RR.value(), RR.edges('s'), RR.edges('mu'), edges, ells=ellsin, out_ells=ells, kind=kind, resolution=resolution)
     theory = Count2CorrelationPoles([Count2CorrelationPole(s=sin, s_edges=edgesin, value=np.zeros_like(sin), ell=ell) for ell in ellsin])
     s = [np.mean(edges, axis=-1) for edges in edges]
-    observable = Count2CorrelationPoles([Count2CorrelationPole(s=s, s_edges=edges, value=np.zeros_like(s), RR0=RR.select(s=edges).value().sum(axis=-1), ell=ell) for ell, s, edges in zip(ells, s, edges)])
+    observable = Count2CorrelationPoles([Count2CorrelationPole(s=s, s_edges=edges, value=np.zeros_like(s),
+                                                               RR0=RR.select(s=edges).value().sum(axis=-1),
+                                                               norm=norm * np.ones_like(s),
+                                                               ell=ell) for ell, s, edges in zip(ells, s, edges)])
     return WindowMatrix(value=window, observable=observable, theory=theory)
 
 
@@ -1999,7 +2004,8 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None):
     if return_window:
         RR = kw_window.get('RR', None)
         if RR is None: RR = estimator.get('RR')
-        window = compute_RR2_window(RR, edges=sedges, ells=kw_window.get('ells', (0, 2, 4)), resolution=kw_window.get('resolution', 1))
+        window = compute_RR2_window(RR, edges=sedges, ells=kw_window.get('ells', (0, 2, 4)),
+                                    norm=estimator_norm.sum(axis=-1), resolution=kw_window.get('resolution', 1))
         window = window.clone(observable=values.clone(value=np.zeros_like(values.value())))
         toret.append(window)
     return tuple(toret) if len(toret) > 1 else toret[0]

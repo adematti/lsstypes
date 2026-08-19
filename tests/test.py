@@ -164,14 +164,11 @@ def test_tree():
 def test_io():
     test_dir = Path('_tests')
     def test_write_read(tree):
-        fn = test_dir / 'tree.h5'
-        write(fn, tree)
-        tree2 = read(fn)
-        assert tree2 == tree
-        fn = test_dir / 'tree.txt'
-        write(fn, tree)
-        tree2 = read(fn)
-        assert tree2 == tree
+        for name in ['tree.h5', 'tree.pkl', 'tree.pickle', 'tree.txt']:
+            fn = test_dir / name
+            write(fn, tree)
+            tree2 = read(fn)
+            assert tree2 == tree
 
     rng = np.random.RandomState(seed=42)
     k1 = np.linspace(0., 0.2, 21)
@@ -203,6 +200,28 @@ def test_io():
     spectrum = get_spectrum()
     spectrum.write(fn, locking=False)
     assert read(fn) == spectrum
+
+    # pickle: complex values and attrs are preserved as is, and protocol can be passed on
+    fn = test_dir / 'spectrum.pkl'
+    for protocol in [None, 4]:
+        spectrum.write(fn, **({} if protocol is None else dict(protocol=protocol)))
+        spectrum2 = read(fn)
+        assert spectrum2 == spectrum
+        assert spectrum2.attrs['zeff'] == spectrum.attrs['zeff']
+        assert np.iscomplexobj(spectrum2.get(0).value())
+    # pickle cannot append: with overwrite = False, an existing file is left untouched
+    from lsstypes.base import _write
+    try:
+        _write(fn, spectrum.__getstate__(to_file=True), overwrite=False)
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError('overwrite = False should not have overwritten the pickle file')
+    assert read(fn) == spectrum
+    # and formats stay interchangeable, since they all hold the same state
+    fn2 = test_dir / 'spectrum_from_pkl.h5'
+    write(fn2, read(fn))
+    assert read(fn2) == spectrum
 
 
 def test_at():
@@ -452,11 +471,12 @@ def test_dict():
     covariance = types.cov([get_observable(seed=seed) for seed in range(100)])
 
     likelihood = dict(observable=observable, window=window, covariance=covariance)
-    fn = test_dir / 'dict.h5'
-    write(fn, likelihood)
-    likelihood2 = read(fn)
-    assert isinstance(likelihood2, dict)
-    assert likelihood2 == likelihood
+    for name in ['dict.h5', 'dict.pkl']:
+        fn = test_dir / name
+        write(fn, likelihood)
+        likelihood2 = read(fn)
+        assert isinstance(likelihood2, dict)
+        assert likelihood2 == likelihood
 
 
 def test_rebin():
@@ -1416,25 +1436,26 @@ def test_utils():
             spectrum.append(Mesh3SpectrumPole(k=k, k_edges=k_edges, nmodes=nmodes, num_raw=num_raw))
         return Mesh3SpectrumPoles(spectrum, ells=ells)
 
-    import numbers
-    import scipy as sp
+    def rebinning_matrix(current_theory: types.ObservableTree, new_coords: types.ObservableTree=None, interp_order: int=3, diag: str=None):
+        import numbers
+        import scipy as sp
+        from lsstypes import ObservableLike
+        from lsstypes.utils import matrix_spline_interp
 
-    def make_spectrum_rebinning_matrix(current_theory: types.ObservableTree,
-                                       new_coords: int=None,
-                                       interp_order: int=3,
-                                       diag: str=None):
         assert diag in [None, 'separate']
-        flattened_theory = current_theory.flatten(level=None)
-        coord_name = list(flattened_theory[0].coords())
+        coord_name = list(next(iter(current_theory)).coords())
         assert len(coord_name) == 1
         coord_name = coord_name[0]
-        current_coords = np.concatenate([pole.coords(coord_name) for pole in flattened_theory], axis=0)
-        current_coords = [np.unique(current_coord) for current_coord in current_coords.T]
+
+        def per_axis_coords(theory):
+            coords = np.concatenate([pole.coords(coord_name) for pole in theory.flatten(level=None)], axis=0)
+            return [np.unique(coord) for coord in coords.T]
+
+        current_coords = per_axis_coords(current_theory)
         if new_coords is None:
             new_coords = current_coords
-        elif isinstance(new_coords, numbers.Number):
-            n = new_coords
-            new_coords = [np.linspace(coords.min(), coords.max(), n) for coords in current_coords]
+        elif isinstance(new_coords, ObservableLike):
+            new_coords = per_axis_coords(new_coords)
 
         def flatten_coords(*coords):
             coords_flat = np.meshgrid(*coords, indexing='ij')
@@ -1443,11 +1464,11 @@ def test_utils():
         new_coords_flat = flatten_coords(*new_coords)
 
         value = []
-        for label, pole in theory.items(level=None):
+        for label, pole in current_theory.items(level=None):
             _current_coords = next(iter(pole.coords().values()))
             current_coords = [np.unique(current_coord) for current_coord in _current_coords.T]
             assert np.allclose(flatten_coords(*current_coords), _current_coords)
-            matrices1d = [utils.matrix_spline_interp(new_coord, current_coord, interp_order=interp_order) for new_coord, current_coord in zip(new_coords, current_coords)]
+            matrices1d = [matrix_spline_interp(new_coord, current_coord, interp_order=interp_order) for new_coord, current_coord in zip(new_coords, current_coords)]
             matrixnd = matrices1d[0]
             for matrix1d in matrices1d[1:]:
                 matrixnd = np.kron(matrixnd, matrix1d)
@@ -1475,12 +1496,12 @@ def test_utils():
         return types.WindowMatrix(value=value, theory=new_theory, observable=current_theory)
 
     theory = get_spectrum3()
-    matrix = make_spectrum_rebinning_matrix(theory, new_coords=20, interp_order=3, diag='separate')
+    matrix = rebinning_matrix(theory, new_coords=theory.select(k=slice(0, None, 2)), interp_order=3, diag='separate')
     theory2 = matrix.theory.map(lambda pole, label: pole.clone(value=get_theory(pole.coords('k'), label['ells'])), input_label=True)
     interpolated = matrix.dot(theory2.value())
     interpolated = theory.clone(value=interpolated)
 
-    if False:
+    if True:
         import matplotlib.pyplot as plt
         ax = plt.gca()
         for ill, (label, pole) in enumerate(interpolated.items()):
@@ -1495,6 +1516,21 @@ def test_utils():
                 ax.plot(k2, k2**2 * pole2.value().diagonal(offset=offset), color=color, linestyle='-', alpha=alpha)
                 ax.plot(k2, k2**2 * get_theory(np.column_stack([k1[:len(k1) - offset], k2]), ell), color=color, linestyle='--', alpha=alpha)
         plt.show()
+
+
+def test_rebinning_matrix():
+
+    import matplotlib.pyplot as plt
+    from lsstypes.utils import matrix_spline_interp
+
+    xt = np.arange(0.0005, 0.15, 0.001)
+    xo = np.arange(0.005, 0.15, 0.01)
+    block = matrix_spline_interp(xt=xt, xo=xo)
+    #downscale = np.kron(np.eye(3), block)
+    fig, ax = plt.subplots()
+    ax.pcolormesh(block)
+    plt.show()
+
 
 
 def test_wrap():
@@ -1584,36 +1620,25 @@ def test_io_speed():
         return Mesh2SpectrumPoles(spectrum, ells=ells)
 
     spectrum = get_spectrum()
-    fn = test_dir / 'spectrum.h5'
-    spectrum.write(fn)
-
-    import h5py
-    from lsstypes.base import _h5py_recursively_read_dict, from_state
 
     n = 100
-    t0 = time.time()
-    for i in range(n):
-        spectrum2 = read(fn)
-    print(f'Readout time h5py: {(time.time() - t0) / n:.5f} s')
-
-    state = spectrum.__getstate__(to_file=True)
-    fn_npy = fn.with_suffix('.npy')
-    np.save(fn_npy, state)
-
-    t0 = time.time()
-    for i in range(n):
-        state = np.load(fn_npy, allow_pickle=True)[()]
-        spectrum2 = from_state(state)
-    print(f'Readout time npy: {(time.time() - t0) / n:.5f} s')
+    for name in ['spectrum.h5', 'spectrum.pkl']:
+        fn = test_dir / name
+        spectrum.write(fn)
+        t0 = time.time()
+        for i in range(n):
+            spectrum2 = read(fn)
+        print(f'Readout time {fn.suffix}: {(time.time() - t0) / n:.5f} s')
 
     spectrum_batch = {i: get_spectrum(seed=seed) for i, seed in enumerate(range(100))}
-    fn = test_dir / 'spectrum.h5'
-    types.write(fn, spectrum_batch)
 
-    # Read-out time scales linearly with the number of hdf5 groups
-    t0 = time.time()
-    spectrum2 = types.read(fn)
-    print(f'Readout time npy: {(time.time() - t0):.5f} s')
+    # Read-out time scales linearly with the number of hdf5 groups, while pickle reads one stream
+    for name in ['spectrum_batch.h5', 'spectrum_batch.pkl']:
+        fn = test_dir / name
+        types.write(fn, spectrum_batch)
+        t0 = time.time()
+        spectrum2 = types.read(fn)
+        print(f'Readout time {fn.suffix} (batch of {len(spectrum_batch):d}): {(time.time() - t0):.5f} s')
 
 
 if __name__ == '__main__':
@@ -1634,3 +1659,4 @@ if __name__ == '__main__':
     test_window_correction_count2()
     test_window_correction_count3()
     test_select_reuses_mesh3_transform_signature()
+    test_rebinning_matrix()
