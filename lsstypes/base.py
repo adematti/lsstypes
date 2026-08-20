@@ -2546,24 +2546,56 @@ class ObservableTree(object):
 
         return tree_map(f, self, level=1, input_label=False, is_leaf='input_not_leaf')
 
-    def value(self, concatenate=True):
+    def value(self, concatenate=True, nested=False):
         """
         Get (flattened) value from all leaves.
 
         Parameters
         ----------
         concatenate : bool, optional
-            If True, concatenate along first axis.
+            If True, ravel the values and concatenate them along the first axis.
+            Ignored if ``nested = True``.
+        nested : bool, optional
+            If True, return the value of each leaf, as nested lists mirroring the tree structure
+            (as :meth:`flatten` with ``nested = True``), instead of the values of the branches
+            of this tree only.
 
         Returns
         -------
         value : list or array
+            A 1D array if ``concatenate = True``, else the values as they are ---
+            a multi-dimensional leaf keeps its shape.
+
+        Example
+        -------
+        >>> tree = ObservableTree([spectrum, mock], observables=['data', 'mock'])
+        >>> tree.value().shape  # everything raveled and concatenated
+        (60,)
+        >>> [value.shape for value in tree.value(concatenate=False)]  # one entry per branch
+        [(30,), (30,)]
+        >>> [[value.shape for value in sub] for sub in tree.value(nested=True)]  # one entry per leaf
+        [[(10,), (10,), (10,)], [(10,), (10,), (10,)]]
+
+        Values are only raveled to be concatenated, so a leaf with several coordinates
+        keeps its shape:
+
+        >>> tree = ObservableTree([xi_smu, xi_smu], observables=['a', 'b'])  # each (11, 5)
+        >>> tree.value().shape, [value.shape for value in tree.value(concatenate=False)]
+        ((110,), [(11, 5), (11, 5)])
         """
         assert isinstance(concatenate, bool)
-        leaves = tree_flatten(self, level=1, is_leaf='input_not_leaf')
-        values = [leaf.value().ravel() for leaf in leaves]
+
+        def _value(branch):
+            # Walk the (possibly nested) list of branches returned by flatten
+            if isinstance(branch, list):
+                return [_value(sub) for sub in branch]
+            return branch.value()
+
+        if nested:
+            return _value(self.flatten(level=None, nested=True))
+        values = _value(tree_flatten(self, level=1, is_leaf='input_not_leaf'))
         if concatenate:
-            return np.concatenate(values, axis=0)
+            return np.concatenate([value.ravel() for value in values], axis=0)
         return values
 
     def __array__(self):
@@ -2589,7 +2621,7 @@ class ObservableTree(object):
                     v = value[ibranch]
                 else:
                     v = value[start:stop]
-                    if shape is not None: v = v.reshape(shape)
+                if shape is not None: v = v.reshape(shape)
                 if v is not None: kw[name] = v
             return kw
 

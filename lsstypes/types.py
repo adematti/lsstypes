@@ -1293,8 +1293,8 @@ class Count2Poles(LeafLikeObservableTree):
         """
         return self.get(0).coords(*args, **kwargs)
 
-    def value(self, concatenate=True):
-        return ObservableTree.value(self, concatenate=concatenate)
+    def value(self, concatenate=True, nested=False):
+        return ObservableTree.value(self, concatenate=concatenate, nested=nested)
 
 
 @register_type
@@ -2666,8 +2666,8 @@ class Count3Poles(LeafLikeObservableTree):
         """
         return self.get((0, 0, 0)).coords(*args, **kwargs)
 
-    def value(self, concatenate=True):
-        return ObservableTree.value(self, concatenate=concatenate)
+    def value(self, concatenate=True, nested=False):
+        return ObservableTree.value(self, concatenate=concatenate, nested=nested)
 
     @property
     def basis(self):

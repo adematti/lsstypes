@@ -340,8 +340,24 @@ def test_flatten_nested():
     assert strlabels[1] == [{'observables': 'mock', 'ells': str(ell)} for ell in [0, 2]]
 
     # branches need not have the same depth: one that stops earlier stays scalar
+    # value(nested=True) follows the same structure, and still concatenates to value()
+    def shapes(x):
+        return [shapes(v) for v in x] if isinstance(x, list) else x.shape
+
+    assert shapes(tree.value(nested=True)) == [[(4,)] * 3, [(4,)] * 2]
+    assert shapes(tree.value(concatenate=False)) == [(12,), (8,)]
+    assert np.allclose(np.concatenate([value for sub in tree.value(nested=True) for value in sub]), tree.value())
+
     mixed = ObservableTree([spectrum(), ObservableLeaf(value=np.ones(2))], observables=['spectrum', 'bao'])
     assert names(mixed.flatten(level=None, nested=True)) == [['Mesh2SpectrumPole'] * 3, 'ObservableLeaf']
+    assert shapes(mixed.value(nested=True)) == [[(4,)] * 3, (2,)]
+
+    # values are only raveled to be concatenated: a multi-dimensional leaf keeps its shape
+    leaf2d = ObservableLeaf(xi=np.arange(55.).reshape(11, 5), s=np.linspace(0., 200., 11), mu=np.linspace(-1., 1., 5), coords=['s', 'mu'])
+    tree2d = ObservableTree([leaf2d, leaf2d], observables=['a', 'b'])
+    assert tree2d.value().shape == (110,)
+    assert shapes(tree2d.value(concatenate=False)) == [(11, 5), (11, 5)]
+    assert shapes(tree2d.value(nested=True)) == [(11, 5), (11, 5)]
     assert mixed.flatten(level=None, nested=True, return_labels=True)[1][1] == {'observables': 'bao'}
 
     deep = ObservableTree([tree, tree], stage=['pre', 'post'])
