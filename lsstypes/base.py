@@ -1368,10 +1368,15 @@ class _ObservableLeafUpdateRef(object):
         #assert len(self._limits) == self._observable.ndim, f'{len(self._limits)} != {self._observable.ndim}, {self._observable}'
 
     def __getitem__(self, masks):
-        """Select a section of the observable."""
-        indices = _format_masks(self._observable.shape, masks)
+        """
+        Select a section of the observable, within the slab defined by :attr:`_limits`.
+        As with :meth:`select`, the rest of the observable is kept as is.
+        """
+        # Masks apply within the slab, then are padded back with the untouched bins on either side
+        indices = _format_masks(tuple(stop - start for start, stop in self._limits), masks)
         assert len(indices) == len(self._limits)
-        indices = [start + index for start, index in zip(self._limits, indices)]
+        indices = tuple(_pad_transform(index, start=start, stop=stop, size=size)
+                        for (start, stop), index, size in zip(self._limits, indices, self._observable.shape))
         new = self._observable[indices]
         if self._hook is not None:
             transform = np.ravel_multi_index(np.meshgrid(*indices, indexing='ij'), dims=self._observable.shape).ravel()
@@ -2514,12 +2519,11 @@ class _ObservableTreeUpdateRef(object):
         if self._hook:
             def hook(leaf, transform): return leaf, transform
             hook.weight = getattr(self._hook, 'weight', None)
-        new = self.copy()
+        new = self._tree.copy()
         transform = None
         for index in (self._indices if self._indices is not None else self._tree._index_labels({})):
             branch = _get_leaf(self._tree, index)
             branch = _get_update_ref(branch)(branch, select=self._select, hook=hook).__getitem__(masks)
-            size = new.size
             if self._hook:
                 branch, _transform = branch
             size = new.size
@@ -2665,7 +2669,7 @@ class LeafLikeObservableTree(ObservableTree):
     def __getitem__(self, masks):
         indices = _format_masks(self.shape, masks)
         new = self.copy()
-        for ibranch, branch in new._branches:
+        for ibranch, branch in enumerate(new._branches):
             new._branches[ibranch] = branch.__getitem__(indices)
         return new
 

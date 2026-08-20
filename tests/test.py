@@ -315,6 +315,52 @@ def test_at():
     assert np.all(tree2.get(observables='spectrum', ells=0).k < 0.1)
 
 
+def test_at_getitem():
+    # Indexing a slab replaces it in place, exactly as select does, leaving the rest of the observable untouched
+    n = 10
+    edges = np.column_stack([np.arange(float(n)), np.arange(1., n + 1.)])
+    leaf = ObservableLeaf(xi=np.arange(float(n)), s=np.arange(float(n)), s_edges=edges, coords=['s'])
+
+    assert np.array_equal(np.asarray(leaf.at[...][::2]), np.arange(0., n, 2.))
+    for masks, expected in [(slice(None, None, 2), [0., 1., 2., 4., 6., 8., 9.]),
+                            ([0, 3], [0., 1., 2., 5., 8., 9.]),
+                            (slice(1, 4), [0., 1., 3., 4., 5., 8., 9.])]:
+        new = leaf.at[2:8][masks]
+        assert np.array_equal(np.asarray(new), expected)
+        # coords and edges follow the values
+        assert np.array_equal(new.s, np.array(expected))
+        assert np.array_equal(new.s_edges[:, 0], np.array(expected))
+    # a pure selection within the slab must agree with select
+    assert np.array_equal(np.asarray(leaf.at[2:8][1:4]), np.asarray(leaf.at[2:8].select(s=slice(1, 4))))
+
+    leaf2 = ObservableLeaf(xi=np.arange(20.).reshape(4, 5), s=np.arange(4.), mu=np.arange(5.), coords=['s', 'mu'])
+    assert np.array_equal(np.asarray(leaf2.at[1:3, 1:4][:, ::2]), np.arange(20.).reshape(4, 5)[:, [0, 1, 3, 4]])
+
+    # the hook transform indexes the original, flattened observable
+    def hook(new, transform): return new, transform
+
+    new, transform = leaf.at.hook(hook)[2:8][::2]
+    assert np.array_equal(transform, [0, 1, 2, 4, 6, 8, 9])
+    assert np.array_equal(np.asarray(leaf).ravel()[transform], np.asarray(new))
+
+    def get_poles():
+        e = np.linspace(0., 0.2, n + 1)
+        e = np.column_stack([e[:-1], e[1:]])
+        return Mesh2SpectrumPoles([Mesh2SpectrumPole(k=np.mean(e, axis=-1), k_edges=e, num_raw=np.arange(float(n)) + 100 * ell, ell=ell) for ell in [0, 2]], ells=[0, 2])
+
+    tree = get_poles()
+    assert np.array_equal(tree.at()[::2].value(), np.concatenate([np.arange(0., n, 2.), 200. + np.arange(0., n, 2.)]))
+    # only the requested branch is indexed
+    assert np.array_equal(tree.at(0)[::2].value(), np.concatenate([np.arange(0., n, 2.), 200. + np.arange(float(n))]))
+    new, transform = tree.at.hook(hook)()[::2]
+    assert np.allclose(tree.value()[np.asarray(transform)], new.value())
+
+    # LeafLikeObservableTree indexes all its branches
+    kw = dict(s=np.arange(float(n)), s_edges=edges, coords=['s'])
+    corr = Count2Correlation(estimator='DD / RR', DD=Count2(counts=np.arange(float(n)), **kw), RR=Count2(counts=np.ones(n), **kw))
+    assert np.array_equal(corr[::2].value(), np.arange(0., n, 2.))
+
+
 def test_matrix(show=False):
 
     test_dir = Path('_tests')
@@ -1649,6 +1695,7 @@ if __name__ == '__main__':
     test_sparse()
     test_rebin()
     test_at()
+    test_at_getitem()
     test_matrix()
     test_likelihood()
     test_dict()
