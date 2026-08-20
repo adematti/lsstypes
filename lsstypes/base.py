@@ -2621,7 +2621,8 @@ class ObservableTree(object):
                     v = value[ibranch]
                 else:
                     v = value[start:stop]
-                if shape is not None: v = v.reshape(shape)
+                    # Reshape only here as we allow branch.clone() to take care of the reshaping
+                    if shape is not None: v = v.reshape(shape)
                 if v is not None: kw[name] = v
             return kw
 
