@@ -315,6 +315,93 @@ def test_at():
     assert np.all(tree2.get(observables='spectrum', ells=0).k < 0.1)
 
 
+def test_flatten_nested():
+
+    def spectrum(ells=(0, 2, 4), n=4):
+        e = np.linspace(0., 0.2, n + 1)
+        e = np.column_stack([e[:-1], e[1:]])
+        return Mesh2SpectrumPoles([Mesh2SpectrumPole(k=np.mean(e, axis=-1), k_edges=e, num_raw=np.arange(float(n)), ell=ell) for ell in ells], ells=list(ells))
+
+    def names(x):
+        return [names(v) for v in x] if isinstance(x, list) else type(x).__name__
+
+    tree = ObservableTree([spectrum(), spectrum(ells=(0, 2))], observables=['data', 'mock'])
+    assert names(tree.flatten(level=None)) == ['Mesh2SpectrumPole'] * 5
+    assert names(tree.flatten(level=None, nested=True)) == [['Mesh2SpectrumPole'] * 3, ['Mesh2SpectrumPole'] * 2]
+    assert names(tree.flatten(level=1, nested=True)) == ['Mesh2SpectrumPoles'] * 2
+
+    branches, labels = tree.flatten(level=None, nested=True, return_labels=True)
+    assert names(branches) == names(tree.flatten(level=None, nested=True))  # labels follow the same structure
+    assert labels == [[{'observables': 'data', 'ells': ell} for ell in [0, 2, 4]],
+                      [{'observables': 'mock', 'ells': ell} for ell in [0, 2]]]
+    # nesting is the only difference: flattening the nested labels gives the flat ones back
+    assert tree.flatten(level=None, return_labels=True)[1] == [label for sub in labels for label in sub]
+    _, _, strlabels = tree.flatten(level=None, nested=True, return_labels=True, return_strlabels=True)
+    assert strlabels[1] == [{'observables': 'mock', 'ells': str(ell)} for ell in [0, 2]]
+
+    # branches need not have the same depth: one that stops earlier stays scalar
+    mixed = ObservableTree([spectrum(), ObservableLeaf(value=np.ones(2))], observables=['spectrum', 'bao'])
+    assert names(mixed.flatten(level=None, nested=True)) == [['Mesh2SpectrumPole'] * 3, 'ObservableLeaf']
+    assert mixed.flatten(level=None, nested=True, return_labels=True)[1][1] == {'observables': 'bao'}
+
+    deep = ObservableTree([tree, tree], stage=['pre', 'post'])
+    assert names(deep.flatten(level=None, nested=True)) == [[['Mesh2SpectrumPole'] * 3, ['Mesh2SpectrumPole'] * 2]] * 2
+
+    # a leaf, or a tree stopped on itself, comes back as is
+    assert names(types.tree_flatten(spectrum().get(0), nested=True)) == 'Mesh2SpectrumPole'
+    n = 6
+    kw = dict(s=np.arange(float(n)), s_edges=np.column_stack([np.arange(float(n)), np.arange(1., n + 1.)]), coords=['s'])
+    corr = Count2Correlation(estimator='DD / RR', DD=Count2(counts=np.arange(float(n)), **kw), RR=Count2(counts=np.ones(n), **kw))
+    assert names(corr.flatten(nested=True)) == ['Count2', 'Count2']
+    assert names(types.tree_flatten(corr, nested=True)) == 'Count2Correlation'
+
+
+def test_unflatten():
+
+    def spectrum(ells=(0, 2, 4), n=4):
+        e = np.linspace(0., 0.2, n + 1)
+        e = np.column_stack([e[:-1], e[1:]])
+        return Mesh2SpectrumPoles([Mesh2SpectrumPole(k=np.mean(e, axis=-1), k_edges=e, num_raw=np.arange(float(n)), ell=ell) for ell in ells], ells=list(ells))
+
+    tree = ObservableTree([spectrum(), spectrum(ells=(0, 2))], observables=['data', 'mock'])
+
+    # inverse of flatten, flat or nested, at every level
+    for level in [1, 2, None]:
+        assert tree.unflatten(tree.flatten(level=level), level=level) == tree
+        assert tree.unflatten(tree.flatten(level=level, nested=True), level=level) == tree
+
+    # branches are actually substituted, and the structure of treedef is kept
+    leaves = tree.flatten(level=None)
+    new = tree.unflatten([leaf.clone(value=2 * leaf.value()) for leaf in leaves], level=None)
+    assert np.allclose(new.value(), 2 * tree.value())
+    assert new.labels(level=None) == tree.labels(level=None)
+
+    assert types.tree_unflatten(tree, types.tree_flatten(tree)) == tree
+    assert types.tree_unflatten(tree, types.tree_flatten(tree, level=None), level=None) == tree
+
+    # a wrong number of branches, or a wrong nesting, is caught
+    for leaves in [tree.flatten(level=None)[:-1], [tree.flatten(level=None)]]:
+        try:
+            tree.unflatten(leaves, level=None)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('mismatched input not caught')
+
+    mixed = ObservableTree([spectrum(), ObservableLeaf(value=np.ones(2))], observables=['spectrum', 'bao'])
+    assert mixed.unflatten(mixed.flatten(level=None, nested=True), level=None) == mixed
+
+    n = 6
+    kw = dict(s=np.arange(float(n)), s_edges=np.column_stack([np.arange(float(n)), np.arange(1., n + 1.)]), coords=['s'])
+    corr = Count2Correlation(estimator='DD / RR', DD=Count2(counts=np.arange(float(n)), **kw), RR=Count2(counts=np.ones(n), **kw))
+    assert corr.unflatten(corr.flatten()) == corr
+
+    # match takes a treedef, positionally or by keyword
+    treedef = spectrum(ells=(2, 0), n=2)
+    assert spectrum().match(treedef).labels() == [{'ells': 2}, {'ells': 0}]
+    assert spectrum().match(treedef=treedef).labels() == [{'ells': 2}, {'ells': 0}]
+
+
 def test_at_getitem():
     # Indexing a slab replaces it in place, exactly as select does, leaving the rest of the observable untouched
     n = 10
@@ -1696,6 +1783,8 @@ if __name__ == '__main__':
     test_rebin()
     test_at()
     test_at_getitem()
+    test_flatten_nested()
+    test_unflatten()
     test_matrix()
     test_likelihood()
     test_dict()

@@ -1084,7 +1084,39 @@ class ObservableLeaf(object):
         return new
 
     def match(self, observable):
-        """Match coordinates to those of input observable."""
+        """
+        Match coordinates to those of input observable.
+
+        Equivalent to calling :meth:`select` with ``observable`` as limit for every coordinate:
+        for each axis, the edges of ``observable`` are used if it has any --- so bins are *rebinned*,
+        averaging the values with the weights given by :meth:`_binweight` --- else its coordinates
+        are used, which is an exact selection.
+
+        Each output bin must be exactly tiled by input bins (up to 1e-5 of the bin width);
+        an output bin no input bin falls into comes out empty, so matching to a *finer* binning
+        than one's own returns zeros rather than interpolating.
+
+        Parameters
+        ----------
+        observable : ObservableLeaf
+            Observable to match to. Only its coordinates and edges are used; values are ignored.
+
+        Returns
+        -------
+        ObservableLeaf
+            New leaf, with the coordinates of the input observable.
+
+        Example
+        -------
+        >>> pole.k
+        array([0.01, 0.03, 0.05, 0.07, 0.09, 0.11, 0.13, 0.15, 0.17, 0.19])
+        >>> pole.match(pole.select(k=(0., 0.1))).k  # same edges, subrange: a selection
+        array([0.01, 0.03, 0.05, 0.07, 0.09])
+        >>> coarse.k  # twice-wider bins
+        array([0.02, 0.06, 0.1 , 0.14, 0.18])
+        >>> pole.match(coarse).k  # bins merged, values averaged
+        array([0.02, 0.06, 0.1 , 0.14, 0.18])
+        """
         return self.select(**{axis: observable for axis in self._coords_names})
 
     @property
@@ -1485,18 +1517,21 @@ def _tree_iter(tree, callback, level=None, is_leaf=None, input_label=False, inpu
                 kw.update(strlabel=strlabel)
             return callback(tree, **kw, **kwargs)
         level = level - 1 if level is not None else None
+        toret = []
         for ibranch, branch in enumerate(tree._branches):
             kw = {}
             if input_label:
                 kw.update(label=label | {key: value[ibranch] for key, value in tree._labels.items()})
             if input_strlabel:
                 kw.update(strlabel=strlabel | {key: value[ibranch] for key, value in tree._strlabels.items()})
-            __tree_iter(branch, level=level, **kw)
+            toret.append(__tree_iter(branch, level=level, **kw))
+        # Nested list of ``callback`` returns, mirroring the tree structure
+        return toret
 
     return __tree_iter(tree, level=level, label={}, strlabel={}, is_input=True)
 
 
-def tree_flatten(tree, level=1, is_leaf=None, return_labels=False, return_strlabels=False):
+def tree_flatten(tree, level=1, is_leaf=None, return_labels=False, return_strlabels=False, nested=False):
     """
     Flatten the tree into a list of branches or leaves.
 
@@ -1508,25 +1543,70 @@ def tree_flatten(tree, level=1, is_leaf=None, return_labels=False, return_strlab
         Level up to which flatten the tree. If `None`, goes to maximum depth.
     is_leaf : callable, optional
         Function to apply to a branch which returns `True` if branch is to be considered a leaf
-        else `False` (and iterated over).
+        else `False` (and iterated over). Defaults to ``branch._is_leaf``.
+        Pass the string 'input_not_leaf' to use that default for all branches *except* `tree` itself,
+        so that a tree which declares itself a leaf (a :class:`LeafLikeObservableTree`) is still
+        iterated over --- this is what :meth:`ObservableTree.flatten` does.
+        A callable that returns `False` for an :class:`ObservableLeaf` raises an
+        :class:`AttributeError`, as the leaf has no branch to iterate over.
     return_labels : bool, optional
         If `True`, also return labels.
     return_strlabels: bool, optional
         If `True`, also return labels with values as str.
+    nested : bool, optional
+        If `True`, return nested lists mirroring the tree structure, instead of a flat list.
+        Labels, if requested, are returned as nested lists of the same structure.
 
     Returns
     -------
     list
         List of branches or leaves up to level.
+
+    Example
+    -------
+    >>> tree = ObservableTree([spectrum, mock], observables=['data', 'mock'])
+    >>> tree_flatten(tree)  # level = 1: the branches of this tree
+    [Mesh2SpectrumPoles(...), Mesh2SpectrumPoles(...)]
+    >>> len(tree_flatten(tree, level=None))  # down to the leaves
+    6
+    >>> branches, labels = tree_flatten(tree, level=None, return_labels=True)
+    >>> labels[:2]
+    [{'observables': 'data', 'ells': 0}, {'observables': 'data', 'ells': 2}]
+    >>> tree_flatten(correlation)  # correlation._is_leaf is True
+    [Count2Correlation(...)]
+    >>> tree_flatten(correlation, is_leaf='input_not_leaf')  # what correlation.flatten() does
+    [Count2(...), Count2(...)]
+
+    With ``nested = True`` the tree structure is kept, and labels come back with the same structure:
+
+    >>> tree_flatten(tree, level=None, nested=True)
+    [[Mesh2SpectrumPole(...), Mesh2SpectrumPole(...), Mesh2SpectrumPole(...)],
+     [Mesh2SpectrumPole(...), Mesh2SpectrumPole(...), Mesh2SpectrumPole(...)]]
+    >>> branches, labels = tree_flatten(tree, level=None, nested=True, return_labels=True)
+    >>> labels[0]
+    [{'observables': 'data', 'ells': 0}, {'observables': 'data', 'ells': 2}, {'observables': 'data', 'ells': 4}]
+
+    Branches need not have the same depth: one that stops earlier simply stays scalar, e.g.
+    a leaf sitting next to a subtree gives ``[[Mesh2SpectrumPole(...), ...], ObservableLeaf(...)]``.
     """
     branches, labels, strlabels = [], [], []
+
+    def _unzip_nested(nested, n):
+        # Turn a nested list of n-tuples into n nested lists of the same structure
+        if isinstance(nested, list):
+            subs = [_unzip_nested(sub, n) for sub in nested]
+            return tuple([sub[i] for sub in subs] for i in range(n))
+        return nested
 
     def callback(branch, label=None, strlabel=None):
         branches.append(branch)
         labels.append(label)
         strlabels.append(strlabel)
+        return branch, label, strlabel
 
-    _tree_iter(tree, callback, level=level, is_leaf=is_leaf, input_label=return_labels, input_strlabel=return_strlabels)
+    _nested = _tree_iter(tree, callback, level=level, is_leaf=is_leaf, input_label=return_labels, input_strlabel=return_strlabels)
+    if nested:
+        branches, labels, strlabels = _unzip_nested(_nested, 3)
 
     toret = [branches]
     if return_labels:
@@ -1538,9 +1618,94 @@ def tree_flatten(tree, level=1, is_leaf=None, return_labels=False, return_strlab
     return tuple(toret)
 
 
+def tree_unflatten(treedef, leaves, level=1, is_leaf=None):
+    """
+    Rebuild a tree with the structure of `treedef` and the input branches or leaves.
+
+    This is the inverse of :func:`tree_flatten`: with the same `level` and `is_leaf`,
+    ``tree_unflatten(tree, tree_flatten(tree, ...), ...)`` returns a tree equal to `tree`.
+
+    Parameters
+    ----------
+    treedef : ObservableTree, ObservableLeaf
+        Tree giving the structure --- labels, nesting, :attr:`attrs` and :attr:`meta` ---
+        of the returned tree. Its own branches are not used, only replaced.
+    leaves : list
+        Branches or leaves to put in, either flat (in the order of :func:`tree_flatten`)
+        or nested (as returned by :func:`tree_flatten` with ``nested = True``).
+        Their number, and their nesting if nested, must match `treedef`.
+    level : int, optional
+        Level up to which `treedef` is rebuilt. If `None`, goes to maximum depth.
+        Must be the `level` the input branches were obtained with.
+    is_leaf : callable, optional
+        Function to apply to a branch which returns `True` if branch is to be considered a leaf
+        (and replaced), else `False` (and iterated over). Defaults to ``branch._is_leaf``.
+        Pass the string 'input_not_leaf' to use that default for all branches *except* `treedef`
+        itself. Must be the `is_leaf` the input branches were obtained with.
+
+    Returns
+    -------
+    new
+        New tree, with the structure of `treedef`.
+
+    Example
+    -------
+    >>> tree = ObservableTree([spectrum, mock], observables=['data', 'mock'])
+    >>> leaves = tree_flatten(tree, level=None)
+    >>> tree_unflatten(tree, [leaf.clone(value=2 * leaf.value()) for leaf in leaves], level=None) == tree
+    False
+    >>> tree_unflatten(tree, leaves, level=None) == tree
+    True
+
+    Nested input is accepted as is, which saves flattening it back by hand:
+
+    >>> leaves = tree_flatten(tree, level=None, nested=True)
+    >>> tree_unflatten(tree, [[leaf for leaf in sub] for sub in leaves], level=None) == tree
+    True
+    """
+    def _flatten_nested(nested):
+        # Flatten arbitrarily nested lists into a single list
+        if isinstance(nested, list):
+            return sum((_flatten_nested(sub) for sub in nested), start=[])
+        return [nested]
+
+    def _nested_structure(nested):
+        # Return the shape of nested lists, with None in place of each entry
+        if isinstance(nested, list):
+            return [_nested_structure(sub) for sub in nested]
+        return None
+
+    structure = tree_flatten(treedef, level=level, is_leaf=is_leaf, nested=True)
+    if isinstance(leaves, list) and isinstance(structure, list) and any(isinstance(leaf, list) for leaf in leaves):
+        # Nested input: its structure must be that of treedef
+        if _nested_structure(leaves) != _nested_structure(structure):
+            raise ValueError(f'input leaves are nested as {_nested_structure(leaves)}, but treedef is {_nested_structure(structure)}')
+    flat = _flatten_nested(leaves)
+    expected = _flatten_nested(structure)
+    if len(flat) != len(expected):
+        raise ValueError(f'got {len(flat):d} branches, but treedef holds {len(expected):d} of them')
+    iflat = iter(flat)
+    return tree_map(lambda branch: next(iflat), treedef, level=level, is_leaf=is_leaf)
+
+
 def tree_labels(tree, return_type='flatten', as_str=False, level=1, is_leaf=None):
     """
-    Return a list of dicts with the labels for each branch or leaf.
+    Return the labels identifying each branch or leaf of the tree.
+
+    Labels are the keyword arguments the tree was built with (``ells=[0, 2, 4]``,
+    ``observables=['spectrum', 'correlation']``, ...). Each entry of the returned list
+    can be passed straight to :meth:`ObservableTree.get`.
+
+    Note
+    ----
+    :meth:`ObservableTree.labels` is the same, except that it defaults `is_leaf` to
+    'input_not_leaf', so that a tree which declares itself a leaf (a
+    :class:`LeafLikeObservableTree`) is still iterated over. Here the default stops on it:
+
+    >>> tree_labels(correlation)  # correlation._is_leaf is True
+    [{}]
+    >>> tree_labels(correlation, is_leaf='input_not_leaf')  # what correlation.labels() does
+    [{'count_names': 'DD'}, {'count_names': 'RR'}]
 
     Parameters
     ----------
@@ -1550,18 +1715,47 @@ def tree_labels(tree, return_type='flatten', as_str=False, level=1, is_leaf=None
         If 'keys' or 'names', return only the list of unique keys (i.e. not label values) up to `level`.
         If 'flatten' (default), return the list of dictionaries {label key: label value} for each branch or leaf up to `level`.
         If 'flatten_values', return the list of values.
-        If 'unflatten', return a dictionary of {label key, label values}. If a label key does not exit in a leaf, fill with `Ellipsis`.
+        If 'unflatten', return a dictionary of {label key: label values}. If a label key does not exist in a leaf, fill with `Ellipsis`.
     as_str : bool, optional
-        If `True`, return labels as strings.
+        If `True`, return label values as strings, as used to name entries on disk.
     level : int, optional
-        Level to retrieve labels from. If `None`, retrieve all levels.
+        Level to retrieve labels from: 1 (default) for the branches of `tree`,
+        2 for their own branches, etc. If `None`, go down to the leaves.
     is_leaf : callable, optional
         Function to apply to a branch which returns `True` if branch is to be considered a leaf
-        else `False` (and iterated over).
+        else `False` (and iterated over). Defaults to ``branch._is_leaf``.
+        Pass the string 'input_not_leaf' to use that default for all branches *except* `tree` itself.
 
     Returns
     -------
     labels : list or dict, or list of dict
+
+    Example
+    -------
+    >>> tree = ObservableTree([spectrum, correlation], observables=['spectrum', 'correlation'])
+    >>> tree_labels(tree)  # level = 1: the branches of this tree
+    [{'observables': 'spectrum'}, {'observables': 'correlation'}]
+    >>> tree_labels(tree, level=None)  # down to the leaves, labels of all levels merged
+    [{'observables': 'spectrum', 'ells': 0}, {'observables': 'spectrum', 'ells': 2},
+     {'observables': 'spectrum', 'ells': 4}, {'observables': 'correlation', 'ells': 0},
+     {'observables': 'correlation', 'ells': 2}]
+    >>> tree_labels(tree, return_type='keys', level=None)
+    ['observables', 'ells']
+    >>> tree_labels(tree, return_type='flatten_values', level=None)
+    [('spectrum', 0), ('spectrum', 2), ('spectrum', 4), ('correlation', 0), ('correlation', 2)]
+    >>> tree_labels(tree, return_type='unflatten', level=None)  # one list per key, all of the same length
+    {'observables': ['spectrum', 'spectrum', 'spectrum', 'correlation', 'correlation'],
+     'ells': [0, 2, 4, 0, 2]}
+
+    Branches need not have the same depth: a leaf sitting next to a subtree simply has no
+    label for the deeper level, which 'flatten' omits and 'unflatten' fills with `Ellipsis`.
+
+    >>> tree = ObservableTree([spectrum, bao_leaf], observables=['spectrum', 'bao'])
+    >>> tree_labels(tree, level=None)
+    [{'observables': 'spectrum', 'ells': 0}, {'observables': 'spectrum', 'ells': 2},
+     {'observables': 'spectrum', 'ells': 4}, {'observables': 'bao'}]
+    >>> tree_labels(tree, return_type='unflatten', level=None)
+    {'observables': ['spectrum', 'spectrum', 'spectrum', 'bao'], 'ells': [0, 2, 4, Ellipsis]}
     """
     _, labels = tree_flatten(tree, level=level, is_leaf=is_leaf, return_labels=not as_str, return_strlabels=as_str)
 
@@ -1593,21 +1787,44 @@ def tree_map(f, tree, level=None, input_label=False, is_leaf=None):
     ----------
     f : callable
         Function to apply to each branch or leaf.
+        If a list of trees is passed, `f` receives the list of matching branches, one per tree.
+        If `f` returns a list, a list of trees is returned, one per entry.
     tree : object or list
         Observable tree(s).
-        The returned tree order is that of the first tree.
+        The returned tree order is that of the first tree; the branches of the others are
+        fetched by label, so they need not be in the same order.
     level : int, optional
         Level to apply function at. If `None`, goes to maximum depth.
     input_label : bool, optional
         Also pass labels to `f`: `f(branch, label)`.
     is_leaf : callable, optional
         Function to apply to a branch which returns `True` if branch is to be considered a leaf
-        (and passed to `f`), else `False` (and iterated over).
+        (and passed to `f`), else `False` (and iterated over). Defaults to ``branch._is_leaf``.
+        Pass the string 'input_not_leaf' to use that default for all branches *except* `tree` itself,
+        so that a tree which declares itself a leaf (a :class:`LeafLikeObservableTree`) is still
+        iterated over --- this is what :meth:`ObservableTree.map` does.
+        An :class:`ObservableLeaf` is always considered a leaf, whatever `is_leaf` returns.
 
     Returns
     -------
     new
-        New tree.
+        New tree, or list of trees if `f` returns a list.
+
+    Example
+    -------
+    >>> tree = ObservableTree([spectrum, mock], observables=['data', 'mock'])
+    >>> tree_map(lambda leaf: leaf.clone(value=2 * leaf.value()), tree, level=None)
+    ObservableTree(...)
+    >>> tree_map(lambda leaf, label: leaf.clone(value=leaf.value() + label['ells']), tree,
+    ...          level=None, input_label=True)
+    ObservableTree(...)
+
+    Several trees are walked in parallel, which is how :meth:`ObservableTree.sum`
+    and :meth:`ObservableTree.match` are implemented:
+
+    >>> tree_map(lambda leaves: leaves[0].clone(value=sum(leaf.value() for leaf in leaves)),
+    ...          [tree, other], level=None)
+    ObservableTree(...)
     """
     input_not_leaf = False
     if isinstance(is_leaf, str) and is_leaf == 'input_not_leaf':
@@ -1947,7 +2164,11 @@ class ObservableTree(object):
 
     def labels(self, return_type='flatten', as_str=False, level=1, is_leaf=None):
         """
-        Return a list of dicts with the labels for each branch or leaf.
+        Return the labels identifying each branch or leaf of the tree.
+
+        Labels are the keyword arguments the tree was built with (``ells=[0, 2, 4]``,
+        ``observables=['spectrum', 'correlation']``, ...). Each entry of the returned list
+        can be passed straight to :meth:`get`, e.g. ``[tree.get(**label) for label in tree.labels()]``.
 
         Parameters
         ----------
@@ -1955,15 +2176,50 @@ class ObservableTree(object):
             If 'keys' or 'names', return only the list of unique keys (i.e. not label values) up to `level`.
             If 'flatten' (default), return the list of dictionaries {label key: label value} for each branch or leaf up to `level`.
             If 'flatten_values', return the list of values.
-            If 'unflatten', return a dictionary of {label key, label values}. If a label key does not exit in a leaf, fill with `Ellipsis`.
+            If 'unflatten', return a dictionary of {label key: label values}. If a label key does not exist in a leaf, fill with `Ellipsis`.
         as_str : bool, optional
-            If `True`, return labels as strings.
-         level : int, optional
-            Level to retrieve labels from. If `None`, retrieve all levels.
+            If `True`, return label values as strings, as used to name entries on disk.
+        level : int, optional
+            Level to retrieve labels from: 1 (default) for the branches of this tree,
+            2 for their own branches, etc. If `None`, go down to the leaves.
+        is_leaf : callable, optional
+            Function to apply to a branch which returns `True` if branch is to be considered a leaf
+            else `False` (and iterated over). Defaults to ``branch._is_leaf``, except for the tree
+            itself, which is always iterated over --- so that a :class:`LeafLikeObservableTree`
+            still reports the labels of its branches.
 
         Returns
         -------
         labels : list or dict, or list of dict
+
+        Example
+        -------
+        >>> tree = ObservableTree([spectrum, correlation], observables=['spectrum', 'correlation'])
+        >>> tree.labels()  # level = 1: the branches of this tree
+        [{'observables': 'spectrum'}, {'observables': 'correlation'}]
+        >>> tree.labels(level=None)  # down to the leaves, labels of all levels merged
+        [{'observables': 'spectrum', 'ells': 0}, {'observables': 'spectrum', 'ells': 2},
+         {'observables': 'spectrum', 'ells': 4}, {'observables': 'correlation', 'ells': 0},
+         {'observables': 'correlation', 'ells': 2}]
+        >>> tree.labels(return_type='keys', level=None)
+        ['observables', 'ells']
+        >>> tree.labels(return_type='flatten_values', level=None)
+        [('spectrum', 0), ('spectrum', 2), ('spectrum', 4), ('correlation', 0), ('correlation', 2)]
+        >>> tree.labels(return_type='unflatten', level=None)  # one list per key, all of the same length
+        {'observables': ['spectrum', 'spectrum', 'spectrum', 'correlation', 'correlation'],
+         'ells': [0, 2, 4, 0, 2]}
+        >>> tree.labels(as_str=True, level=None)[0]
+        {'observables': 'spectrum', 'ells': '0'}
+
+        Branches need not have the same depth: a leaf sitting next to a subtree simply has no
+        label for the deeper level, which 'flatten' omits and 'unflatten' fills with `Ellipsis`.
+
+        >>> tree = ObservableTree([spectrum, bao_leaf], observables=['spectrum', 'bao'])
+        >>> tree.labels(level=None)
+        [{'observables': 'spectrum', 'ells': 0}, {'observables': 'spectrum', 'ells': 2},
+         {'observables': 'spectrum', 'ells': 4}, {'observables': 'bao'}]
+        >>> tree.labels(return_type='unflatten', level=None)
+        {'observables': ['spectrum', 'spectrum', 'spectrum', 'bao'], 'ells': [0, 2, 4, Ellipsis]}
         """
         if is_leaf is None:
             is_leaf = 'input_not_leaf'
@@ -2064,7 +2320,7 @@ class ObservableTree(object):
 
         return get_subtree(self, indices)
 
-    def flatten(self, level=1, is_leaf=None, return_labels=False, return_strlabels=False):
+    def flatten(self, level=1, is_leaf=None, return_labels=False, return_strlabels=False, nested=False):
         """
         Flatten the tree into a list of branches or leaves.
 
@@ -2074,20 +2330,79 @@ class ObservableTree(object):
             Level up to which flatten the tree. If `None`, goes to maximum depth.
         is_leaf : callable, optional
             Function to apply to a branch which returns `True` if branch is to be considered a leaf
-            (and added to the output list), else `False` (and iterated over).
+            (and added to the output list), else `False` (and iterated over). Defaults to
+            ``branch._is_leaf``, except for the tree itself, which is always iterated over --- so
+            that a :class:`LeafLikeObservableTree` still reports its own branches.
         return_labels : bool, optional
             If `True`, also return labels.
         return_strlabels: bool, optional
             If `True`, also return labels with values as str.
+        nested : bool, optional
+            If `True`, return nested lists mirroring the tree structure, instead of a flat list.
+            Labels, if requested, are returned as nested lists of the same structure.
 
         Returns
         -------
         list
             List of branches or leaves up to level.
+
+        Example
+        -------
+        >>> tree = ObservableTree([spectrum, mock], observables=['data', 'mock'])
+        >>> tree.flatten(level=None, nested=True)
+        [[Mesh2SpectrumPole(...), Mesh2SpectrumPole(...), Mesh2SpectrumPole(...)],
+         [Mesh2SpectrumPole(...), Mesh2SpectrumPole(...), Mesh2SpectrumPole(...)]]
+        >>> branches, labels = tree.flatten(level=None, nested=True, return_labels=True)
+        >>> labels[0]
+        [{'observables': 'data', 'ells': 0}, {'observables': 'data', 'ells': 2}, {'observables': 'data', 'ells': 4}]
         """
         if is_leaf is None:
             is_leaf = 'input_not_leaf'
-        return tree_flatten(self, level=level, is_leaf=is_leaf, return_labels=return_labels, return_strlabels=return_strlabels)
+        return tree_flatten(self, level=level, is_leaf=is_leaf, return_labels=return_labels, return_strlabels=return_strlabels, nested=nested)
+
+    def unflatten(self, leaves, level=1, is_leaf=None):
+        """
+        Return a tree with the structure of this one, and the input branches or leaves.
+
+        This is the inverse of :meth:`flatten`: with the same `level` and `is_leaf`,
+        ``tree.unflatten(tree.flatten(...), ...)`` returns a tree equal to ``tree``.
+
+        Parameters
+        ----------
+        leaves : list
+            Branches or leaves to put in, either flat (in the order of :meth:`flatten`)
+            or nested (as returned by :meth:`flatten` with ``nested = True``).
+            Their number, and their nesting if nested, must match this tree.
+        level : int, optional
+            Level up to which the tree is rebuilt. If `None`, goes to maximum depth.
+            Must be the `level` the input branches were obtained with.
+        is_leaf : callable, optional
+            Function to apply to a branch which returns `True` if branch is to be considered a leaf
+            (and replaced), else `False` (and iterated over). Defaults to ``branch._is_leaf``,
+            except for the tree itself, which is always iterated over.
+            Must be the `is_leaf` the input branches were obtained with.
+
+        Returns
+        -------
+        new
+            New tree, with the structure of this one.
+
+        Example
+        -------
+        >>> leaves = tree.flatten(level=None)
+        >>> tree.unflatten(leaves, level=None) == tree
+        True
+        >>> tree.unflatten([leaf.clone(value=2 * leaf.value()) for leaf in leaves], level=None).value()
+        array([...])
+
+        Nested input is accepted as is:
+
+        >>> tree.unflatten(tree.flatten(level=None, nested=True), level=None) == tree
+        True
+        """
+        if is_leaf is None:
+            is_leaf = 'input_not_leaf'
+        return tree_unflatten(self, leaves, level=level, is_leaf=is_leaf)
 
     def items(self, level=1, is_leaf=None):
         """
@@ -2099,7 +2414,9 @@ class ObservableTree(object):
             Level up to which iterate the tree. If `None`, goes to maximum depth.
         is_leaf : callable, optional
             Function to apply to a branch which returns `True` if branch is to be considered a leaf
-            (and added to the output list), else `False` (and iterated over).
+            (and added to the output list), else `False` (and iterated over). Defaults to
+            ``branch._is_leaf``, except for the tree itself, which is always iterated over --- so
+            that a :class:`LeafLikeObservableTree` still reports its own branches.
 
         Yields
         ------
@@ -2122,7 +2439,9 @@ class ObservableTree(object):
             Also pass labels to `f`: `f(branch, label)`.
         is_leaf : callable, optional
             Function to apply to a branch which returns `True` if branch is to be considered a leaf
-            (and passed to `f`), else `False` (and iterated over).
+            (and passed to `f`), else `False` (and iterated over). Defaults to ``branch._is_leaf``,
+            except for the tree itself, which is always iterated over --- so that a
+            :class:`LeafLikeObservableTree` still has its own branches mapped over.
 
         Returns
         -------
@@ -2133,23 +2452,52 @@ class ObservableTree(object):
             is_leaf = 'input_not_leaf'
         return tree_map(f, self, level=level, input_label=input_label, is_leaf=is_leaf)
 
-    def match(self, observable):
+    def match(self, treedef):
         """
-        Match the the tree to the input observable, recursively, matching structure (labels) and coordinates.
+        Match the tree to the input tree, recursively, matching structure (labels) and coordinates.
+
+        The input acts as a template --- only its structure and coordinates are used, never its
+        values: the returned tree has the branches of ``treedef``, in its order, each leaf matched
+        to the corresponding leaf of ``treedef`` with :meth:`ObservableLeaf.match` --- so
+        coordinates are selected or rebinned as needed. Branches of ``self`` that are absent from
+        ``treedef`` are dropped; a label present in ``treedef`` but missing from ``self`` raises a
+        :class:`ValueError`. :attr:`attrs` and :attr:`meta` are those of ``self``.
+
+        This is the usual way to bring a measurement, a covariance and a window matrix onto a
+        common binning; see :meth:`WindowMatrix.at` and :meth:`CovarianceMatrix.at` to match those,
+        which propagate the same selection to the matrix itself.
 
         Parameters
         ----------
-        observable : ObservableTree
-            Observable to match to.
+        treedef : ObservableTree
+            Tree to match to, giving both the structure and the coordinates.
+            Must be a tree, not a leaf.
 
         Returns
         -------
         ObservableTree
-            New tree matched to input observable.
+            New tree matched to input tree.
+
+        Example
+        -------
+        >>> tree.labels(), [pole.shape for pole in tree]
+        ([{'ells': 0}, {'ells': 2}, {'ells': 4}], [(10,), (10,), (10,)])
+        >>> treedef.labels(), [pole.shape for pole in treedef]  # two multipoles, twice-coarser bins
+        ([{'ells': 2}, {'ells': 0}], [(5,), (5,)])
+        >>> new = tree.match(treedef)
+        >>> new.labels(), [pole.shape for pole in new]  # ell = 4 dropped, order of target followed
+        ([{'ells': 2}, {'ells': 0}], [(5,), (5,)])
+
+        Matching is recursive, so it applies to nested trees as well:
+
+        >>> tree = ObservableTree([spectrum, mock], observables=['data', 'mock'])
+        >>> tree.match(treedef).labels(level=None)
+        [{'observables': 'data', 'ells': 0}, {'observables': 'data', 'ells': 2},
+         {'observables': 'mock', 'ells': 0}]
         """
-        assert isinstance(observable, ObservableTree), 'input must be a tree'
+        assert isinstance(treedef, ObservableTree), 'input must be a tree'
         new = tree_map(lambda observables: observables[1].match(observables[0]),
-                       [observable, self], is_leaf='input_not_leaf')
+                       [treedef, self], is_leaf='input_not_leaf')
         for name in ['_attrs', '_meta']:
             setattr(new, name, getattr(self, name))
         return new
