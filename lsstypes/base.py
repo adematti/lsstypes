@@ -522,6 +522,14 @@ def _check_data_names(self):
         raise ValueError(f'{missing} missing, expected all of {known_names - set(edges_names)}')
 
 
+def _as_data_array(value):
+    # Keep leaf data array-like: hdf5 / txt readers turn 0-d datasets into Python scalars.
+    # Anything that already exposes a shape (numpy, jax, ...) is left untouched.
+    if hasattr(value, 'shape'):
+        return value
+    return np.asarray(value)
+
+
 def _check_data_shapes(self):
     edges_names = _edges_names(self._coords_names)
     for coord_name, edges_name in zip(self._coords_names, edges_names):
@@ -635,7 +643,7 @@ class ObservableLeaf(object):
         # Setup attrs, meta, data, coords_names
         self._attrs = dict(attrs or {})
         self._meta = dict(meta or {})
-        self._data = dict(data)
+        self._data = {name: _as_data_array(value) for name, value in data.items()}
         self._coords_names = list(coords or [])
 
     def __post_init__(self):
@@ -652,6 +660,10 @@ class ObservableLeaf(object):
             return self._meta[name]
         if name in self._data:
             return self._data[name]
+        if hasattr(type(self), name):
+            # Reached only because the class attribute (typically a property) raised AttributeError itself:
+            # do not report it as a missing attribute.
+            raise AttributeError(f'{type(self).__name__}.{name} exists but raised AttributeError internally')
         raise AttributeError(name)
 
     def coords(self, axis=None, center=None):
@@ -1145,9 +1157,9 @@ class ObservableLeaf(object):
             setattr(self, '_' + name, [str(n) for n in state.get(name, [])])
         self._attrs = state.get('attrs', {})  # because of hdf5 reader
         self._meta = state.get('meta', {})
-        self._data = {name: state[name] for name in self._values_names + self._coords_names}
+        self._data = {name: _as_data_array(state[name]) for name in self._values_names + self._coords_names}
         for name in _edges_names(self._coords_names):
-            if name in state: self._data[name] = state[name]
+            if name in state: self._data[name] = _as_data_array(state[name])
 
     def __eq__(self, other):
         return deep_eq(self.__getstate__(), other.__getstate__())
@@ -2230,6 +2242,10 @@ class ObservableTree(object):
             return self._meta[name]
         if name in self._labels:
             return list(self._labels[name])
+        if hasattr(type(self), name):
+            # Reached only because the class attribute (typically a property) raised AttributeError itself:
+            # do not report it as a missing attribute.
+            raise AttributeError(f'{type(self).__name__}.{name} exists but raised AttributeError internally')
         raise AttributeError(name)
 
     def _index_labels(self, labels, flatten=True):
