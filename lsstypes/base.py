@@ -946,38 +946,8 @@ class ObservableLeaf(object):
             edges = limit
 
         iaxis = self._coords_names.index(axis)
-        # Tolerance: 1e-5x bin width
-        width = np.abs(edges[..., 1] - edges[..., 0])
-        tol = 1e-5 * width
-        try:
-            import scipy.sparse as sp
-        except ImportError:
-            sp = None
 
-        # Add extra dimension (raveled coordinates)
-        edges_ = edges[:, None, :] if edges.ndim == 2 else edges
-        self_edges_ = self_edges[:, None, :] if self_edges.ndim == 2 else self_edges
-        tol_ = tol[:, None] if tol.ndim == 1 else tol
-
-        if sp is None:
-            mask = ((self_edges_[None, ..., 0] >= edges_[:, None, ..., 0] - tol_[:, None]) &
-                (self_edges_[None, ..., 1] <= edges_[:, None, ..., 1] + tol_[:, None])).all(axis=-1)
-        else:
-            rows, cols = [], []
-            for i in range(edges_.shape[0]):
-                rowmask = np.ones(self_edges_.shape[0], dtype='?')
-                for idim in range(self_edges_.shape[1]):
-                    rowmask &= self_edges_[:, idim, 0] >= edges_[i, idim, 0] - tol_[i, idim]
-                    rowmask &= self_edges_[:, idim, 1] <= edges_[i, idim, 1] + tol_[i, idim]
-                jj = np.flatnonzero(rowmask)
-                rows.append(np.full(jj.size, i, dtype='i8'))
-                cols.append(jj)
-
-            rows = np.concatenate(rows)
-            cols = np.concatenate(cols)
-
-            from scipy import sparse
-            mask = sparse.csr_matrix((np.ones(rows.size, dtype='?'), (rows, cols)), shape=(edges_.shape[0], self_edges_.shape[0]))
+        mask = utils.rebinning_matrix(edges_in=self_edges, edges_out=edges)
 
         if np.all(mask.sum(axis=-1) == 1):  # 1 True: a simple selection!
             index, index_self = np.nonzero(mask)

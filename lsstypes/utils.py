@@ -411,3 +411,63 @@ def matrix_spline_interp(xt, xo, deriv: int=0, interp_order: int=3):
         raise NotImplementedError(f"deriv={deriv} not implemented")
 
     return np.asarray(spl(xo))
+
+
+def rebinning_matrix(edges_in, edges_out):
+    """
+    Compute a rebinning mask to change edges.
+
+    Parameters
+    ----------
+    edges_in : ArrayLike
+        Input edges for the rebinning.
+    edges_out : ArrayLike
+        Goal output edges for the rebinning.
+
+    Returns
+    -------
+    mask
+        Rebinning matrix. `scipy.sparse` implementation if scipy available.
+    """
+    # Tolerance: 1e-5x bin width
+    width = np.abs(edges_out[..., 1] - edges_out[..., 0])
+    tol = 1e-5 * width
+    try:
+        import scipy.sparse as sp
+    except ImportError:
+        sp = None
+
+    # Add extra dimension (raveled coordinates)
+    edges_out_ = edges_out[:, None, :] if edges_out.ndim == 2 else edges_out
+    edges_in_ = edges_in[:, None, :] if edges_in.ndim == 2 else edges_in
+    tol_ = tol[:, None] if tol.ndim == 1 else tol
+
+    if sp is None:
+        mask = (
+            (edges_in_[None, ..., 0] >= edges_out_[:, None, ..., 0] - tol_[:, None])
+            & (edges_in_[None, ..., 1] <= edges_out_[:, None, ..., 1] + tol_[:, None])
+        ).all(axis=-1)
+    else:
+        rows, cols = [], []
+        for i in range(edges_out_.shape[0]):
+            rowmask = np.ones(edges_in_.shape[0], dtype="?")
+            for idim in range(edges_in_.shape[1]):
+                rowmask &= (
+                    edges_in_[:, idim, 0] >= edges_out_[i, idim, 0] - tol_[i, idim]
+                )
+                rowmask &= (
+                    edges_in_[:, idim, 1] <= edges_out_[i, idim, 1] + tol_[i, idim]
+                )
+            jj = np.flatnonzero(rowmask)
+            rows.append(np.full(jj.size, i, dtype="i8"))
+            cols.append(jj)
+
+        rows = np.concatenate(rows)
+        cols = np.concatenate(cols)
+
+        mask = sp.csr_matrix(
+            (np.ones(rows.size, dtype="?"), (rows, cols)),
+            shape=(edges_out_.shape[0], edges_in_.shape[0]),
+        )
+
+    return mask
