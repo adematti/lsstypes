@@ -1058,6 +1058,7 @@ class ObservableLeaf(object):
         -------
         ObservableLeaf
         """
+        _check_limits(limits, self._coords_names)
         new = self.copy()
         for iaxis, axis in enumerate(self._coords_names):
             limit = limits.pop(axis, None)
@@ -1429,6 +1430,7 @@ class _ObservableLeafUpdateRef(object):
 
     def select(self, center='mid_if_edges', return_transform=False, **limits):
         """Select a range in one or more coordinates."""
+        _check_limits(limits, self._observable._coords_names)
         new = self._observable.copy()
         cum_transform = np.arange(new.size)
 
@@ -1991,6 +1993,46 @@ def _format_input_labels(self, *args, **labels):
     return labels
 
 
+def _coords_names(observable):
+    """Names of the coordinates of each leaf of input observable."""
+    return sum(map(lambda leaf: leaf._coords_names, tree_flatten(observable, level=None)), start=[])
+
+
+def _check_limits(limits, names):
+    """Warn about selection limits matching none of input coordinate names."""
+    unknown = [name for name in limits if name not in names]
+    if unknown:
+        warnings.warn(f'{unknown} not found in coordinates {list(dict.fromkeys(names))}, ignoring them')
+
+
+def _get_values(kwargs, ibranch, start, stop, shape=None, nbranches=1, size=0):
+    """
+    Values to update branch number ``ibranch`` --- which spans ``start:stop`` in the flat tree of
+    total size ``size`` --- with: either the ``ibranch``-th entry of an input list (of length ``nbranches``),
+    or the matching slice of an input (concatenated) array, reshaped to ``shape``.
+    """
+    kw = dict()
+    for name, value in kwargs.items():
+        if isinstance(value, dict):  # attrs, meta: passed to each branch as is
+            v = value
+        elif isinstance(value, (tuple, list)):
+            if len(value) != nbranches:
+                raise ValueError(f"input '{name}' has {len(value):d} entries for {nbranches:d} branches, expected one entry per branch")
+            v = value[ibranch]
+        else:
+            if np.ndim(value) == 0:
+                raise ValueError(f"input '{name}' is a scalar, expected an array of length {size:d} "
+                                 "(total size of the branches to update) or a list with one entry per branch")
+            if np.shape(value)[0] != size:
+                raise ValueError(f"input '{name}' has length {np.shape(value)[0]:d}, but {size:d} values are expected "
+                                 "(total size of the branches to update)")
+            v = value[start:stop]
+            # Reshape only here as we allow branch.clone() to take care of the reshaping
+            if shape is not None: v = v.reshape(shape)
+        if v is not None: kw[name] = v
+    return kw
+
+
 def _flatten_index_labels(indices):
     """
     Flatten nested index label dictionary into a list of index tuples.
@@ -2310,7 +2352,8 @@ class ObservableTree(object):
             The matching subtree or leaf.
         """
         labels = _format_input_labels(self, *args, **labels)
-        isscalar = isinstance(labels, dict) and not any(isinstance(v, list) for v in labels.values())
+        # Without any label, get() is the identity: do not unwrap a single branch
+        isscalar = isinstance(labels, dict) and bool(labels) and not any(isinstance(v, list) for v in labels.values())
         indices = self._index_labels(labels, flatten=False)
         if len(indices) == 0:
             raise ValueError(f'{labels} not found')
@@ -2554,13 +2597,12 @@ class ObservableTree(object):
         ObservableTree
             New tree with selected leaves.
         """
-        def f(leaf):
-            _limits = limits
-            if leaf._is_leaf:
-                _limits = {k: v for k, v in limits.items() if k in leaf._coords_names}
-            return leaf.select(**_limits)
+        _check_limits(limits, _coords_names(self))
 
-        return tree_map(f, self, level=1, input_label=False, is_leaf='input_not_leaf')
+        def f(leaf):
+            return leaf.select(**{k: v for k, v in limits.items() if k in leaf._coords_names})
+
+        return tree_map(f, self, level=None, input_label=False, is_leaf='input_not_leaf')
 
     def value(self, concatenate=True, nested=False):
         """
@@ -2630,23 +2672,12 @@ class ObservableTree(object):
             if name in kwargs:
                 setattr(new, f'_{name}', dict(kwargs.pop(name) or {}))
 
-        def _get_values(kwargs, ibranch, start, stop, shape=None):
-            kw = dict()
-            for name, value in kwargs.items():
-                if isinstance(value, (tuple, list)):
-                    v = value[ibranch]
-                else:
-                    v = value[start:stop]
-                    # Reshape only here as we allow branch.clone() to take care of the reshaping
-                    if shape is not None: v = v.reshape(shape)
-                if v is not None: kw[name] = v
-            return kw
-
         start = 0
         for ibranch, branch in enumerate(new._branches):
             stop = start + branch.size
             shape = branch.shape if branch._is_leaf else None
-            new._branches[ibranch] = branch.clone(**_get_values(kwargs, ibranch, start, stop, shape=shape))
+            values = _get_values(kwargs, ibranch, start, stop, shape=shape, nbranches=len(new._branches), size=new.size)
+            new._branches[ibranch] = branch.clone(**values)
             start = stop
         return new
 
@@ -2847,23 +2878,14 @@ class _ObservableTreeUpdateRef(object):
             raise NotImplementedError('hook not implemented for clone')
         new = self._tree.copy()
 
-        def _get_values(kwargs, ibranch, start, stop, shape=None):
-            kw = dict()
-            for name, value in kwargs.items():
-                if isinstance(value, (tuple, list)):
-                    v = value[ibranch]
-                else:
-                    v = value[start:stop]
-                    if shape is not None: v = v.reshape(shape)
-                if v is not None: kw[name] = v
-            return kw
-
+        indices = self._indices if self._indices is not None else [None]
+        branches = [_get_leaf(self._tree, index) for index in indices]
+        size = sum(branch.size for branch in branches)
         start = 0
-        for ibranch, index in enumerate((self._indices if self._indices is not None else [None])):
-            branch = _get_leaf(self._tree, index)
+        for ibranch, (index, branch) in enumerate(zip(indices, branches)):
             stop = start + branch.size
             shape = branch.shape if branch._is_leaf else None
-            sub = branch.clone(**_get_values(kwargs, ibranch, start, stop, shape=shape))
+            sub = branch.clone(**_get_values(kwargs, ibranch, start, stop, shape=shape, nbranches=len(branches), size=size))
             if index is None:
                 new = sub
             else:
@@ -2942,9 +2964,13 @@ class _ObservableTreeUpdateRef(object):
 
         new = self._tree.copy()
         transform = None
-        for index in (self._indices if self._indices is not None else self._tree._index_labels({})):
-            branch = _get_leaf(self._tree, index)
-            branch = _get_update_ref(branch)(branch, select=self._select, hook=hook).select(**limits)
+        indices = self._indices if self._indices is not None else self._tree._index_labels({})
+        branches = [_get_leaf(self._tree, index) for index in indices]
+        _check_limits(limits, sum(map(_coords_names, branches), start=[]))
+        for index, branch in zip(indices, branches):
+            # Only pass the limits this branch knows about, so that it does not warn about its siblings' coordinates
+            _limits = {k: v for k, v in limits.items() if k in _coords_names(branch)}
+            branch = _get_update_ref(branch)(branch, select=self._select, hook=hook).select(**_limits)
             if self._hook:
                 branch, _transform = branch
             size = new.size

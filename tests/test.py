@@ -3,6 +3,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
+import pytest
+
+if __name__ != '__main__':
+    # Under pytest: no window ever pops up, and no warning about the figures the plotting tests pile up
+    import matplotlib
+    matplotlib.use('Agg')
+    matplotlib.rcParams['figure.max_open_warning'] = 0
 
 import lsstypes as types
 from lsstypes import ObservableLeaf, ObservableTree, read, write
@@ -10,6 +17,14 @@ from lsstypes import Mesh2SpectrumPole, Mesh2SpectrumPoles, Mesh3SpectrumPole, M
 from lsstypes import Count2Pole, Count2Poles, Count2CorrelationPoles, Count2PolesJackknife
 from lsstypes import Count3, Count3Pole, Count3Poles, Count3Correlation, Count3CorrelationPoles
 from lsstypes import WindowMatrix, CovarianceMatrix, GaussianLikelihood, ObservableLike
+
+
+@pytest.fixture(autouse=True)
+def close_figures():
+    # Tests only plot with show=True; still, close the figures they create, else they pile up
+    yield
+    from matplotlib import pyplot as plt
+    plt.close('all')
 
 
 def _make_mesh3_spectrum_poles(seed=42):
@@ -313,6 +328,42 @@ def test_at():
     tree = ObservableTree([tree, poles], observables=['correlation', 'spectrum'])
     tree2 = tree.at(observables='spectrum').at(0).select(k=(0., 0.1))
     assert np.all(tree2.get(observables='spectrum', ells=0).k < 0.1)
+
+
+def test_clone_get_select_checks():
+    import warnings
+
+    leaves = [ObservableLeaf(coords=['k'], k=np.arange(4.), value=np.arange(4.) + 4. * i) for i in range(2)]
+    tree = ObservableTree(leaves, g=[0, 1])
+
+    # clone requires the concatenated array to match the total size of the tree
+    assert np.allclose(tree.clone(value=np.arange(8.)).value(), np.arange(8.))
+    for size in [7, 9]:
+        with pytest.raises(ValueError):
+            tree.clone(value=np.arange(1. * size))
+    with pytest.raises(ValueError):
+        tree.at(g=0).clone(value=np.arange(5.))
+    # ... and the list of values to have one entry per branch
+    assert np.allclose(tree.clone(value=[np.zeros(4), None]).value(), [0.] * 4 + list(np.arange(4.) + 4.))
+    with pytest.raises(ValueError):
+        tree.clone(value=[np.zeros(4)])
+    assert np.allclose(tree.at(g=0).clone(value=np.zeros(4)).value(), [0.] * 4 + list(np.arange(4.) + 4.))
+
+    # get() without label is the identity, even with a single branch
+    single = ObservableTree([tree], i=[0])
+    assert single.get() == single
+    assert single.get(i=0) == tree
+
+    # selecting an unknown coordinate warns
+    other = ObservableTree([ObservableLeaf(coords=['s'], s=np.arange(4.), value=np.arange(4.))], g=[2])
+    mixed = ObservableTree([tree, other], o=['a', 'b'])
+    for observable in [leaves[0], tree, mixed, tree.at(g=0)]:
+        with pytest.warns(UserWarning):
+            observable.select(bogus=(0., 1.))
+    # but a coordinate found in a single leaf does not
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        assert [leaf.value().shape for leaf in mixed.select(k=(0., 2.)).flatten(level=None)] == [(3,), (3,), (4,)]
 
 
 def test_flatten_nested():
@@ -1545,7 +1596,7 @@ def test_readme():
         rebinned.write('rebinned.hdf5')
 
 
-def test_utils():
+def test_utils(show=False):
     from lsstypes import utils
     nobs, nbins, nparams = 1000, 50, 10
     factor = utils.get_hartlap2007_factor(nobs, nbins)
@@ -1650,7 +1701,7 @@ def test_utils():
     interpolated = matrix.dot(theory2.value())
     interpolated = theory.clone(value=interpolated)
 
-    if True:
+    if show:
         import matplotlib.pyplot as plt
         ax = plt.gca()
         for ill, (label, pole) in enumerate(interpolated.items()):
@@ -1667,18 +1718,19 @@ def test_utils():
         plt.show()
 
 
-def test_rebinning_matrix():
+def test_rebinning_matrix(show=False):
 
-    import matplotlib.pyplot as plt
     from lsstypes.utils import matrix_spline_interp
 
     xt = np.arange(0.0005, 0.15, 0.001)
     xo = np.arange(0.005, 0.15, 0.01)
     block = matrix_spline_interp(xt=xt, xo=xo)
     #downscale = np.kron(np.eye(3), block)
-    fig, ax = plt.subplots()
-    ax.pcolormesh(block)
-    plt.show()
+    if show:
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots()
+        ax.pcolormesh(block)
+        plt.show()
 
 
 
@@ -1800,6 +1852,7 @@ if __name__ == '__main__':
     test_at()
     test_at_getitem()
     test_flatten_nested()
+    test_clone_get_select_checks()
     test_unflatten()
     test_matrix()
     test_likelihood()
