@@ -1517,7 +1517,7 @@ def _tree_iter(tree, callback, level=None, is_leaf=None, input_label=False, inpu
 
     def _is_leaf(branch, is_input):
         if input_not_leaf and is_input: return False
-        return is_leaf(branch)
+        return is_leaf(branch) or isinstance(branch, ObservableLeaf)
 
     def _stop(branch, level, is_input=False):
         return level is not None and level <= 0 or _is_leaf(branch, is_input)
@@ -1561,8 +1561,8 @@ def tree_flatten(tree, level=1, is_leaf=None, return_labels=False, return_strlab
         Pass the string 'input_not_leaf' to use that default for all branches *except* `tree` itself,
         so that a tree which declares itself a leaf (a :class:`LeafLikeObservableTree`) is still
         iterated over --- this is what :meth:`ObservableTree.flatten` does.
-        A callable that returns `False` for an :class:`ObservableLeaf` raises an
-        :class:`AttributeError`, as the leaf has no branch to iterate over.
+        An :class:`ObservableLeaf` is always considered a leaf, whatever `is_leaf` returns,
+        so ``is_leaf = lambda *args: False`` walks every tree --- leaf-like ones included --- down to the leaves.
     return_labels : bool, optional
         If `True`, also return labels.
     return_strlabels: bool, optional
@@ -1739,6 +1739,7 @@ def tree_labels(tree, return_type='flatten', as_str=False, level=1, is_leaf=None
         Function to apply to a branch which returns `True` if branch is to be considered a leaf
         else `False` (and iterated over). Defaults to ``branch._is_leaf``.
         Pass the string 'input_not_leaf' to use that default for all branches *except* `tree` itself.
+        An :class:`ObservableLeaf` is always considered a leaf, whatever `is_leaf` returns.
 
     Returns
     -------
@@ -2003,6 +2004,24 @@ def _check_limits(limits, names):
     unknown = [name for name in limits if name not in names]
     if unknown:
         warnings.warn(f'{unknown} not found in coordinates {list(dict.fromkeys(names))}, ignoring them')
+
+
+def _clone_shape(branch):
+    """
+    Shape to reshape a flat slice to, before handing it to ``branch.clone``: the branch shape for a leaf,
+    `None` for a tree --- including a leaf-like one, which spreads the flat slice over its own branches.
+    """
+    return branch.shape if isinstance(branch, ObservableLeaf) else None
+
+
+def _flat_size(observable):
+    """
+    Length of the flat :meth:`value` of input observable, i.e. the sum over its true leaves.
+
+    Not ``observable.size``, which a :class:`LeafLikeObservableTree` reports as its first branch's ---
+    smaller than its flat value by the number of branches.
+    """
+    return sum(map(lambda leaf: leaf.size, tree_flatten(observable, level=None, is_leaf=lambda *args: False)))
 
 
 def _get_values(kwargs, ibranch, start, stop, shape=None, nbranches=1, size=0):
@@ -2672,11 +2691,13 @@ class ObservableTree(object):
             if name in kwargs:
                 setattr(new, f'_{name}', dict(kwargs.pop(name) or {}))
 
+        sizes = [_flat_size(branch) for branch in new._branches]
+        size = sum(sizes)
         start = 0
         for ibranch, branch in enumerate(new._branches):
-            stop = start + branch.size
-            shape = branch.shape if branch._is_leaf else None
-            values = _get_values(kwargs, ibranch, start, stop, shape=shape, nbranches=len(new._branches), size=new.size)
+            stop = start + sizes[ibranch]
+            shape = _clone_shape(branch)
+            values = _get_values(kwargs, ibranch, start, stop, shape=shape, nbranches=len(new._branches), size=size)
             new._branches[ibranch] = branch.clone(**values)
             start = stop
         return new
@@ -2880,11 +2901,12 @@ class _ObservableTreeUpdateRef(object):
 
         indices = self._indices if self._indices is not None else [None]
         branches = [_get_leaf(self._tree, index) for index in indices]
-        size = sum(branch.size for branch in branches)
+        sizes = [_flat_size(branch) for branch in branches]
+        size = sum(sizes)
         start = 0
         for ibranch, (index, branch) in enumerate(zip(indices, branches)):
-            stop = start + branch.size
-            shape = branch.shape if branch._is_leaf else None
+            stop = start + sizes[ibranch]
+            shape = _clone_shape(branch)
             sub = branch.clone(**_get_values(kwargs, ibranch, start, stop, shape=shape, nbranches=len(branches), size=size))
             if index is None:
                 new = sub
