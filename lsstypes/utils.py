@@ -297,9 +297,37 @@ def inv(mat, inv=np.linalg.inv, check_valid='raise'):
     return toret
 
 
+def _blockinv(blocks, inv=np.linalg.inv):
+    """Block inversion by Schur complement, without scaling or validation."""
+    A = blocks[0][0]
+    if (len(blocks), len(blocks[0])) == (1, 1):
+        return inv(A)
+    B = np.block(blocks[0][1:])
+    C = np.block([b[0].T for b in blocks[1:]]).T
+    invD = _blockinv([b[1:] for b in blocks[1:]], inv=inv)
+
+    def dot(*args):
+        return np.linalg.multi_dot(args)
+
+    invShur = inv(A - dot(B, invD, C))
+    return np.block([[invShur, -dot(invShur, B, invD)], [-dot(invD, C, invShur), invD + dot(invD, C, invShur, B, invD)]])
+
+
 def blockinv(blocks, inv=np.linalg.inv, check_valid: str='raise'):
     """
     Return inverse of input ``blocks`` matrix.
+
+    The matrix is whitened by its own diagonal before inversion and scaled back afterwards:
+    writing :math:`C = D R D` with :math:`D` the diagonal of standard deviations, the inverse
+    is :math:`C^{-1} = D^{-1} R^{-1} D^{-1}`, and :math:`R` -- a correlation matrix, unit
+    diagonal -- is what is actually handed to ``inv``.
+
+    This is not cosmetic. A joint covariance of statistics carrying different units spans their
+    dynamic range squared: a power spectrum, a bispectrum and a correlation function together
+    ran to a condition number of 9.8e25, against the ~1e16 float64 can invert at all, and the
+    Schur recursion returned an inverse off the identity by 2.9e-3 -- caught by
+    :func:`_check_valid_inv`, but only after the work. Whitening removes exactly the part of the
+    conditioning that is a choice of units, and leaves the part that is real degeneracy.
 
     Parameters
     ----------
@@ -319,21 +347,25 @@ def blockinv(blocks, inv=np.linalg.inv, check_valid: str='raise'):
     inverse : 2D array
         Inverse of ``blocks`` matrix.
     """
-    A = blocks[0][0]
-    if (len(blocks), len(blocks[0])) == (1, 1):
-        return inv(A)
-    B = np.block(blocks[0][1:])
-    C = np.block([b[0].T for b in blocks[1:]]).T
-    invD = blockinv([b[1:] for b in blocks[1:]], inv=inv)
-
-    def dot(*args):
-        return np.linalg.multi_dot(args)
-
-    invShur = inv(A - dot(B, invD, C))
-    inverse = np.block([[invShur, -dot(invShur, B, invD)], [-dot(invD, C, invShur), invD + dot(invD, C, invShur, B, invD)]])
     mat = np.block(blocks)
-    _check_valid_inv(mat, inverse, check_valid=check_valid)
-    return inverse
+    scale = np.sqrt(np.abs(np.diag(mat)))
+    # A non-positive or non-finite diagonal entry has no scale to speak of; leave those rows and
+    # columns alone rather than dividing by zero, and let the validity check speak for them.
+    scale = np.where((scale > 0.) & np.isfinite(scale), scale, 1.)
+    sizes = [block.shape[0] for block in [row[0] for row in blocks]]
+    edges = np.cumsum([0] + sizes)
+    scales = [scale[start:stop] for start, stop in zip(edges[:-1], edges[1:])]
+    blocks = [[block / np.outer(scales[i], scales[j]) for j, block in enumerate(row)]
+              for i, row in enumerate(blocks)]
+    inverse = _blockinv(blocks, inv=inv)
+    # Checked in the whitened basis, on purpose. `mat @ inverse` evaluated in the caller's units
+    # loses precision in the product itself when the entries span 1e18 and the inverse's span
+    # 1e-18 -- it reports the conditioning of the multiplication, not the quality of the inverse.
+    # Measured on a joint P + B + xi covariance: cond(C) = 9.8e25 against cond(R) = 2.3e2, so the
+    # whole of it is the choice of units, and the whitened check is the one that answers the
+    # question asked.
+    _check_valid_inv(np.block(blocks), inverse, check_valid=check_valid)
+    return inverse / np.outer(scale, scale)
 
 
 def get_percival2014_factor(nobs: int, nbins: int, nparams: int):

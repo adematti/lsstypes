@@ -2004,7 +2004,8 @@ def _project_to_poles(estimator, ells=None, ignore_nan=False, kw_window=None):
     if return_window:
         RR = kw_window.get('RR', None)
         if RR is None: RR = estimator.get('RR')
-        window = compute_RR2_window(RR, edges=sedges, ells=kw_window.get('ells', (0, 2, 4)),
+        window = compute_RR2_window(RR, edges=sedges, ells=kw_window.get('ells', ells),
+                                    ellsin=kw_window.get('ellsin', (0, 2, 4)),
                                     norm=estimator_norm.sum(axis=-1), resolution=kw_window.get('resolution', 1))
         window = window.clone(observable=values.clone(value=np.zeros_like(values.value())))
         toret.append(window)
