@@ -2052,6 +2052,35 @@ def _get_values(kwargs, ibranch, start, stop, shape=None, nbranches=1, size=0):
     return kw
 
 
+def _merge_index_labels(indices, other):
+    """
+    Merge nested index label dictionary `other` into `indices`, in-place.
+
+    `None` (the whole branch is selected) takes precedence over any selection of its sub-branches.
+    Indices keep the order in which they first appear.
+
+    Parameters
+    ----------
+    indices : dict
+        Nested index dictionary, updated in-place.
+    other : dict
+        Nested index dictionary to merge in.
+
+    Returns
+    -------
+    dict
+        `indices`.
+    """
+    for index, value in other.items():
+        if index not in indices:
+            indices[index] = value
+        elif indices[index] is None or value is None:
+            indices[index] = None
+        else:
+            _merge_index_labels(indices[index], value)
+    return indices
+
+
 def _flatten_index_labels(indices):
     """
     Flatten nested index label dictionary into a list of index tuples.
@@ -2313,7 +2342,9 @@ class ObservableTree(object):
         if isinstance(labels, list):
             toret = {}
             for label in labels:
-                toret.update(self._index_labels(label, flatten=False))
+                # Merge, so that label dictionaries selecting different sub-branches
+                # of the same branch do not overwrite each other
+                _merge_index_labels(toret, self._index_labels(label, flatten=False))
         else:
             labels = dict(labels)
             # Follows the original order
@@ -2362,19 +2393,39 @@ class ObservableTree(object):
             Positional label arguments:
             - one label value is there is one label entry in current tree
             - a list of dictionaries [{'label_name1': 'label_value1', 'label_name2': 'label_value2'}, ...]
+            An empty list selects nothing, and returns a tree with no branch --- so that
+            label dictionaries can be filtered before being passed in, without a special case.
         **labels : dict
             Keyword label arguments, label_name1=label_value1 (or list of label_value1)
 
         Returns
         -------
         ObservableLeaf or ObservableTree
-            The matching subtree or leaf.
+            The matching subtree or leaf. A single leaf is returned only for a scalar
+            selection (one label value per name); a list of label dictionaries always
+            returns a tree.
+
+        Raises
+        ------
+        ValueError
+            If the (non-empty) input labels match no branch.
+
+        Example
+        -------
+        >>> tree.get(observables='spectrum', ells=0)  # scalar selection: a leaf
+        Mesh2SpectrumPole(...)
+        >>> tree.get([{'observables': 'spectrum', 'ells': 0}, {'observables': 'spectrum', 'ells': 2}])
+        ObservableTree(labels=[{'observables': 'spectrum'}], size=20)
+        >>> tree.get([]).labels(level=None)  # no branch
+        []
         """
         labels = _format_input_labels(self, *args, **labels)
         # Without any label, get() is the identity: do not unwrap a single branch
         isscalar = isinstance(labels, dict) and bool(labels) and not any(isinstance(v, list) for v in labels.values())
+        # An empty list of labels selects nothing, and returns a tree with no branch
+        isempty = isinstance(labels, list) and not labels
         indices = self._index_labels(labels, flatten=False)
-        if len(indices) == 0:
+        if len(indices) == 0 and not isempty:
             raise ValueError(f'{labels} not found')
 
         if isscalar:
@@ -2939,7 +2990,7 @@ class _ObservableTreeUpdateRef(object):
         for index in (self._indices if self._indices is not None else [None]):
             branch = _get_leaf(self._tree, index)
             _labels = _format_input_labels(branch, *args, **labels)
-            sub = branch.get(**_labels if isinstance(_labels, dict) else _labels)
+            sub = branch.get(**_labels) if isinstance(_labels, dict) else branch.get(_labels)
             if index is None:
                 new = sub
                 start, stop = 0, branch.size
